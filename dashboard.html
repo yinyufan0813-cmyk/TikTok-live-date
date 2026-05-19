@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GMV Max Float</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --panel: rgba(17, 24, 39, 0.18);
+      --line: rgba(148, 163, 184, 0.35);
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --yellow: #fbbf24;
+      --blue: #38bdf8;
+      --green: #22c55e;
+      --red: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 1160px;
+      min-height: 340px;
+      background: transparent;
+      color: var(--text);
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+      overflow: hidden;
+    }
+
+    .wrap {
+      padding: 14px 16px 16px;
+      border: 1px solid var(--line);
+      min-height: 100vh;
+      background: rgba(0, 0, 0, 0.08);
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      background: transparent;
+      border: 1px solid var(--line);
+    }
+
+    th, td {
+      border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      background: transparent;
+    }
+
+    td.account {
+      width: 190px;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--text);
+    }
+
+    .metric {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+      white-space: nowrap;
+    }
+
+    .value {
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .spend { color: var(--yellow); }
+    .gmv { color: var(--blue); }
+    .roi { color: #a78bfa; }
+    .total { color: #e5e7eb; }
+
+    .arrow {
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .up { color: var(--green); }
+    .down { color: var(--red); }
+    .flat { color: var(--muted); }
+
+    .diff {
+      color: var(--muted);
+      font-size: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .box {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 9px 10px;
+    }
+
+    .box label {
+      display: block;
+      color: var(--muted);
+      font-size: 9px;
+      margin-bottom: 4px;
+    }
+
+    .box strong {
+      font-size: 13px;
+    }
+
+    .empty, .error {
+      padding: 40px 20px;
+      color: var(--muted);
+      font-size: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .error { color: #fecaca; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>LIVE GMV Max</h1>
+      <div class="status" id="status">读取中...</div>
+    </header>
+    <div id="app"></div>
+  </div>
+
+  <script>
+    const csvUrl = "./logs/gmvmax-plan-records.csv";
+    const refreshMs = 30000;
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let cell = "";
+      let quoted = false;
+      for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        const next = text[index + 1];
+        if (quoted && char === '"' && next === '"') {
+          cell += '"';
+          index += 1;
+        } else if (char === '"') {
+          quoted = !quoted;
+        } else if (!quoted && char === ",") {
+          row.push(cell);
+          cell = "";
+        } else if (!quoted && (char === "\n" || char === "\r")) {
+          if (char === "\r" && next === "\n") index += 1;
+          row.push(cell);
+          if (row.some(Boolean)) rows.push(row);
+          row = [];
+          cell = "";
+        } else {
+          cell += char;
+        }
+      }
+      if (cell || row.length) {
+        row.push(cell);
+        rows.push(row);
+      }
+      const headers = rows.shift() || [];
+      return rows.map(values => Object.fromEntries(headers.map((key, index) => [key, values[index] || ""])));
+    }
+
+    function moneyNumber(value) {
+      const match = String(value || "").replaceAll(",", "").match(/-?\d+(?:\.\d+)?/);
+      return match ? Number(match[0]) : 0;
+    }
+
+    function money(value) {
+      return `${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MYR`;
+    }
+
+    function roi(numerator, denominator) {
+      const den = Number(denominator || 0);
+      if (!den) return null;
+      return Number(numerator || 0) / den;
+    }
+
+    function roiText(value) {
+      if (value == null || !Number.isFinite(value)) return "-";
+      return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function latestGroups(rows) {
+      const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
+      const currentTs = timestamps.at(-1);
+      const previousTs = timestamps.at(-2);
+      return {
+        currentTs,
+        previousTs,
+        current: rows.filter(row => row.timestamp === currentTs),
+        previous: rows.filter(row => row.timestamp === previousTs)
+      };
+    }
+
+    function keyFor(row, index) {
+      return row.account || row.campaign || `账号 ${index + 1}`;
+    }
+
+    function compare(current, previous, field) {
+      const now = moneyNumber(current?.[field]);
+      const before = moneyNumber(previous?.[field]);
+      const diff = now - before;
+      if (diff > 0.004) return { arrow: "▲", cls: "up", diff: `+${money(diff)}` };
+      if (diff < -0.004) return { arrow: "▼", cls: "down", diff: money(diff) };
+      return { arrow: "→", cls: "flat", diff: "0.00 MYR" };
+    }
+
+    function compareNumber(now, before, formatter) {
+      if (now == null || !Number.isFinite(now) || before == null || !Number.isFinite(before)) {
+        return { arrow: "→", cls: "flat", diff: "0.00" };
+      }
+      const diff = now - before;
+      if (diff > 0.004) return { arrow: "▲", cls: "up", diff: `+${formatter(diff)}` };
+      if (diff < -0.004) return { arrow: "▼", cls: "down", diff: formatter(diff) };
+      return { arrow: "→", cls: "flat", diff: formatter(0) };
+    }
+
+    function metric(row, previous, field, cls) {
+      const change = compare(row, previous, field);
+      return `
+        <div class="metric">
+          <span class="value ${cls}">${row[field] || "0.00 MYR"}</span>
+          <span class="arrow ${change.cls}">${change.arrow}</span>
+          <span class="diff">${change.diff}</span>
+        </div>
+      `;
+    }
+
+    function roiMetric(currentValue, previousValue) {
+      const change = compareNumber(currentValue, previousValue, roiText);
+      return `
+        <div class="metric">
+          <span class="value roi">${roiText(currentValue)}</span>
+          <span class="arrow ${change.cls}">${change.arrow}</span>
+          <span class="diff">${change.diff}</span>
+        </div>
+      `;
+    }
+
+    function render(rows) {
+      const app = document.getElementById("app");
+      const status = document.getElementById("status");
+      if (!rows.length) {
+        app.innerHTML = `<div class="empty">等待采集数据...</div>`;
+        status.textContent = "no data";
+        return;
+      }
+
+      const { currentTs, previousTs, current, previous } = latestGroups(rows);
+      const previousByKey = new Map(previous.map((row, index) => [keyFor(row, index), row]));
+      const spendTotal = current.reduce((sum, row) => sum + moneyNumber(row.interval_spend_increase), 0);
+      const gmvTotal = current.reduce((sum, row) => sum + moneyNumber(row.interval_order_amount_increase), 0);
+      const totalSpend = current.reduce((sum, row) => sum + moneyNumber(row.total_spend), 0);
+      const totalGmv = current.reduce((sum, row) => sum + moneyNumber(row.total_order_amount), 0);
+      const newRoi = roi(gmvTotal, spendTotal);
+      const totalRoi = roi(totalGmv, totalSpend);
+
+      const updatedAt = new Date(currentTs).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+      status.textContent = `最新 ${updatedAt} | 每30秒刷新`;
+      app.innerHTML = `
+        <section class="summary">
+          <div class="box"><label>新增消耗</label><strong class="spend">${money(spendTotal)}</strong></div>
+          <div class="box"><label>新增成交</label><strong class="gmv">${money(gmvTotal)}</strong></div>
+          <div class="box"><label>新增整体 ROI</label><strong class="roi">${roiText(newRoi)}</strong></div>
+          <div class="box"><label>总消耗</label><strong>${money(totalSpend)}</strong></div>
+          <div class="box"><label>总成交</label><strong>${money(totalGmv)}</strong></div>
+          <div class="box"><label>总 ROI</label><strong class="roi">${roiText(totalRoi)}</strong></div>
+        </section>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 165px;">账号</th>
+              <th>新增消耗</th>
+              <th>新增成交</th>
+              <th>新增 ROI</th>
+              <th>总消耗</th>
+              <th>总成交</th>
+              <th>总 ROI</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${current.map((row, index) => {
+              const key = keyFor(row, index);
+              const previousRow = previousByKey.get(key);
+              const rowNewRoi = roi(moneyNumber(row.interval_order_amount_increase), moneyNumber(row.interval_spend_increase));
+              const previousNewRoi = previousRow
+                ? roi(moneyNumber(previousRow.interval_order_amount_increase), moneyNumber(previousRow.interval_spend_increase))
+                : null;
+              const rowTotalRoi = roi(moneyNumber(row.total_order_amount), moneyNumber(row.total_spend));
+              const previousTotalRoi = previousRow
+                ? roi(moneyNumber(previousRow.total_order_amount), moneyNumber(previousRow.total_spend))
+                : null;
+              return `
+                <tr>
+                  <td class="account">${key}</td>
+                  <td>${metric(row, previousRow, "interval_spend_increase", "spend")}</td>
+                  <td>${metric(row, previousRow, "interval_order_amount_increase", "gmv")}</td>
+                  <td>${roiMetric(rowNewRoi, previousNewRoi)}</td>
+                  <td>${metric(row, previousRow, "total_spend", "total")}</td>
+                  <td>${metric(row, previousRow, "total_order_amount", "total")}</td>
+                  <td>${roiMetric(rowTotalRoi, previousTotalRoi)}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function load() {
+      try {
+        const response = await fetch(`${csvUrl}?t=${Date.now()}`);
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        render(parseCsv(await response.text()));
+      } catch (error) {
+        document.getElementById("status").textContent = "error";
+        document.getElementById("app").innerHTML = `<div class="error">读取数据失败：${error.message}</div>`;
+      }
+    }
+
+    load();
+    setInterval(load, refreshMs);
+  </script>
+</body>
+</html>
