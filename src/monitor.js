@@ -369,6 +369,31 @@ async function collectOnce(page, config, outputDir) {
       }));
     }
 
+    function extractTableRows() {
+      const rowNodes = Array.from(document.querySelectorAll("tr, [role='row']"));
+      return rowNodes
+        .map((row) => textOf(row))
+        .filter((rowText) => rowText.includes("recommendation") && rowText.includes(" ID:") && rowText.includes("MYR"))
+        .map((rowText, index) => {
+          const values = Array.from(rowText.matchAll(/([\d,]+(?:\.\d+)?)\s+MYR/g)).map((item) => parseNumber(item[1]));
+          if (values.length < 6) return null;
+
+          const activeIndex = rowText.indexOf(" Active ");
+          const name = activeIndex > 0 ? rowText.slice(0, activeIndex).trim() : `live-plan-${index + 1}`;
+          const account = rowText.match(/\d+\s+recommendations?\s+(.*?)\s+ID:/i)?.[1]?.trim() || null;
+
+          return {
+            index: index + 1,
+            account,
+            name,
+            totalSpend: moneyText(values[2]),
+            netSpend: moneyText(values[4]),
+            totalOrderAmount: moneyText(values[5])
+          };
+        })
+        .filter(Boolean);
+    }
+
     function parseNumber(value) {
       if (!value) return null;
       const match = String(value).replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
@@ -415,6 +440,7 @@ async function collectOnce(page, config, outputDir) {
     const labelMetrics = Object.fromEntries(Object.entries(labels).map(([key, labelOptions]) => [key, valueAfterLabel(labelOptions)]));
     const englishMetrics = englishOverviewMetrics(bodyText);
     const plans = extractBySelectors();
+    const tablePlans = extractTableRows();
     const englishPlans = englishLivePlans(bodyText);
     return {
       url: location.href,
@@ -425,7 +451,7 @@ async function collectOnce(page, config, outputDir) {
         totalSpend: labelMetrics.totalSpend || englishMetrics.totalSpend,
         totalOrderAmount: labelMetrics.totalOrderAmount || englishMetrics.totalOrderAmount
       },
-      plans: plans.length > 0 ? plans : englishPlans,
+      plans: plans.length > 0 ? plans : tablePlans.length > 0 ? tablePlans : englishPlans,
       bodyText
     };
   }, { labels: LABELS, selectors: config.selectors });
@@ -450,6 +476,19 @@ async function collectOnce(page, config, outputDir) {
 async function enrichPlanIncrements(historyPath, result) {
   const previous = await readLatestRecordWithPlans(historyPath);
   const previousByKey = new Map((previous?.plans || []).map((plan) => [plan.account || plan.name, plan]));
+  const currentKeys = new Set((result.plans || []).map((plan) => plan.account || plan.name).filter(Boolean));
+
+  for (const [key, previousPlan] of previousByKey.entries()) {
+    if (currentKeys.has(key)) continue;
+    result.plans.push({
+      ...previousPlan,
+      intervalSpendIncrease: "0.00 MYR",
+      intervalOrderAmountIncrease: "0.00 MYR"
+    });
+  }
+
+  result.plans.sort((a, b) => accountRank(a.account || a.name) - accountRank(b.account || b.name));
+
   for (const plan of result.plans || []) {
     const previousPlan = previousByKey.get(plan.account || plan.name);
     const spendIncrease = previousPlan ? parseMoney(plan.totalSpend) - parseMoney(previousPlan.totalSpend) : 0;
@@ -459,6 +498,12 @@ async function enrichPlanIncrements(historyPath, result) {
   }
   result.liveGmvMax.newSpend = moneyText((result.plans || []).reduce((sum, plan) => sum + parseMoney(plan.intervalSpendIncrease), 0));
   result.liveGmvMax.newOrderAmount = moneyText((result.plans || []).reduce((sum, plan) => sum + parseMoney(plan.intervalOrderAmountIncrease), 0));
+}
+
+function accountRank(account) {
+  const order = ["YOUMILIER KLASIK", "YOUMILIER FASHION", "YOUMILIER"];
+  const index = order.indexOf(account);
+  return index === -1 ? order.length : index;
 }
 
 async function readLatestRecordWithPlans(filePath) {
