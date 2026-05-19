@@ -1,0 +1,24 @@
+{
+  "url": "PASTE_YOUR_TIKTOK_GMV_MAX_DASHBOARD_URL_HERE",
+  "mode": "attach",
+  "cdpEndpoint": "http://127.0.0.1:9222",
+  "intervalMinutes": 10,
+  "headless": false,
+  "profileDir": "./chrome-profile-win",
+  "outputDir": "./logs",
+  "locale": "zh-CN",
+  "timezoneId": "Asia/Kuala_Lumpur",
+  "tabMatch": {
+    "urlIncludes": ["ads.tiktok.com", "gmv-max/dashboard", "type=live"],
+    "titleIncludes": ["GMV"]
+  },
+  "selectors": {
+    "planRows": "",
+    "account": "",
+    "planName": "",
+    "newSpend": "",
+    "newOrderAmount": "",
+    "totalSpend": "",
+    "totalOrderAmount": ""
+  }
+}
