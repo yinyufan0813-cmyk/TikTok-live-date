@@ -25,7 +25,7 @@
       min-height: 340px;
       background: transparent;
       color: var(--text);
-      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       overflow: hidden;
     }
 
@@ -223,17 +223,67 @@
     function latestGroups(rows) {
       const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
       const currentTs = timestamps.at(-1);
-      const previousTs = timestamps.at(-2);
+      const currentRaw = rows.filter(row => row.timestamp === currentTs);
+      const current = completeCurrentRows(rows, currentTs, currentRaw);
       return {
         currentTs,
-        previousTs,
-        current: rows.filter(row => row.timestamp === currentTs),
-        previous: rows.filter(row => row.timestamp === previousTs)
+        current,
+        previousByKey: previousRowsByKey(rows, currentTs)
       };
     }
 
     function keyFor(row, index) {
       return row.account || row.campaign || `账号 ${index + 1}`;
+    }
+
+    function accountRank(account) {
+      const order = ["YOUMILIER KLASIK", "YOUMILIER FASHION", "YOUMILIER"];
+      const index = order.indexOf(account);
+      return index === -1 ? order.length : index;
+    }
+
+    function isRealAccountKey(key) {
+      return Boolean(key) && !key.startsWith("live-plan-") && !key.startsWith("账号 ");
+    }
+
+    function completeCurrentRows(rows, currentTs, currentRows) {
+      const validCurrentRows = currentRows.filter((row, index) => isRealAccountKey(keyFor(row, index)));
+      const currentKeys = new Set(validCurrentRows.map((row, index) => keyFor(row, index)));
+      const latestByKey = new Map();
+      for (const row of rows) {
+        if (!row.timestamp || row.timestamp > currentTs) continue;
+        const key = keyFor(row, latestByKey.size);
+        if (!isRealAccountKey(key)) continue;
+        latestByKey.set(key, row);
+      }
+
+      const completed = [...validCurrentRows];
+      for (const [key, row] of latestByKey.entries()) {
+        if (currentKeys.has(key)) continue;
+        completed.push({
+          ...row,
+          timestamp: currentTs,
+          interval_spend_increase: "0.00 MYR",
+          interval_order_amount_increase: "0.00 MYR"
+        });
+      }
+
+      return completed.sort((a, b) => {
+        const ak = keyFor(a, 0);
+        const bk = keyFor(b, 0);
+        return accountRank(ak) - accountRank(bk) || ak.localeCompare(bk);
+      });
+    }
+
+    function previousRowsByKey(rows, currentTs) {
+      const previous = new Map();
+      for (const row of rows) {
+        if (!row.timestamp || row.timestamp >= currentTs) continue;
+        const key = keyFor(row, previous.size);
+        if (!isRealAccountKey(key)) continue;
+        previous.set(key, row);
+      }
+      return previous;
     }
 
     function compare(current, previous, field) {
@@ -286,8 +336,7 @@
         return;
       }
 
-      const { currentTs, previousTs, current, previous } = latestGroups(rows);
-      const previousByKey = new Map(previous.map((row, index) => [keyFor(row, index), row]));
+      const { currentTs, current, previousByKey } = latestGroups(rows);
       const spendTotal = current.reduce((sum, row) => sum + moneyNumber(row.interval_spend_increase), 0);
       const gmvTotal = current.reduce((sum, row) => sum + moneyNumber(row.interval_order_amount_increase), 0);
       const totalSpend = current.reduce((sum, row) => sum + moneyNumber(row.total_spend), 0);
