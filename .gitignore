@@ -1,0 +1,8 @@
+node_modules/
+logs/
+config.json
+chrome-profile-win/
+.env
+*.log
+.DS_Store
+Thumbs.db
