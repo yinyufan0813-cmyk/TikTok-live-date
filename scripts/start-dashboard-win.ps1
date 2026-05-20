@@ -28,6 +28,14 @@ function Find-Chrome {
   return $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 
+& (Join-Path $PSScriptRoot "start-chrome-win.ps1")
+
+Start-Process -FilePath "powershell" -WindowStyle Minimized -ArgumentList @(
+  "-NoProfile",
+  "-ExecutionPolicy", "Bypass",
+  "-Command", "Set-Location -LiteralPath '$root'; npm run once"
+)
+
 if (-not (Test-PortOpen -HostName "127.0.0.1" -Port $port)) {
   $command = "Set-Location -LiteralPath '$root'; node src/dashboard-server.js"
   Start-Process -FilePath "powershell" -WindowStyle Minimized -ArgumentList @(
