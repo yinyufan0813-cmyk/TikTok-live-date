@@ -256,18 +256,23 @@
       return index === -1 ? order.length : index;
     }
 
-    function isRealAccountKey(key) {
-      return Boolean(key) && !key.startsWith("live-plan-") && !key.startsWith("账号 ");
+    function hasAccount(row) {
+      return Boolean(String(row?.account || "").trim());
+    }
+
+    function isRealAccountKey(row, index) {
+      const key = keyFor(row, index);
+      return hasAccount(row) && Boolean(key) && !key.startsWith("live-plan-") && !key.startsWith("账号 ");
     }
 
     function completeCurrentRows(rows, currentTs, currentRows) {
-      const validCurrentRows = currentRows.filter((row, index) => isRealAccountKey(keyFor(row, index)));
+      const validCurrentRows = currentRows.filter((row, index) => isRealAccountKey(row, index));
       const currentKeys = new Set(validCurrentRows.map((row, index) => keyFor(row, index)));
       const latestByKey = new Map();
       for (const row of rows) {
         if (!row.timestamp || row.timestamp > currentTs) continue;
         const key = keyFor(row, latestByKey.size);
-        if (!isRealAccountKey(key)) continue;
+        if (!isRealAccountKey(row, latestByKey.size)) continue;
         latestByKey.set(key, row);
       }
 
@@ -294,7 +299,7 @@
       for (const row of rows) {
         if (!row.timestamp || row.timestamp >= currentTs) continue;
         const key = keyFor(row, previous.size);
-        if (!isRealAccountKey(key)) continue;
+        if (!isRealAccountKey(row, previous.size)) continue;
         previous.set(key, row);
       }
       return previous;
