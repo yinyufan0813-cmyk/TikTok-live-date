@@ -448,6 +448,7 @@ async function collectOnce(page, config, outputDir) {
     const plans = extractBySelectors();
     const tablePlans = extractTableRows();
     const englishPlans = englishLivePlans(bodyText);
+    const parsedPlans = plans.length > 0 ? plans : tablePlans.length > 0 ? tablePlans : englishPlans;
     return {
       url: location.href,
       title: document.title,
@@ -457,12 +458,34 @@ async function collectOnce(page, config, outputDir) {
         totalSpend: labelMetrics.totalSpend || englishMetrics.totalSpend,
         totalOrderAmount: labelMetrics.totalOrderAmount || englishMetrics.totalOrderAmount
       },
-      plans: plans.length > 0 ? plans : tablePlans.length > 0 ? tablePlans : englishPlans,
+      plans: parsedPlans,
+      pageState: {
+        hasSystemError: /System error|No campaigns found/i.test(bodyText),
+        planCount: parsedPlans.length
+      },
       bodyText
     };
   }, { labels: LABELS, selectors: config.selectors });
 
-  const result = { timestamp, url: record.url, title: record.title, liveGmvMax: record.metrics, plans: record.plans };
+  const result = {
+    timestamp,
+    url: record.url,
+    title: record.title,
+    liveGmvMax: record.metrics,
+    plans: record.plans,
+    pageState: record.pageState
+  };
+
+  if (!Array.isArray(result.plans) || result.plans.length === 0) {
+    const safeStamp = timestamp.replace(/[:.]/g, "-");
+    await fs.writeFile(path.join(outputDir, `debug-${safeStamp}.txt`), record.bodyText, "utf8");
+    await page.screenshot({ path: path.join(outputDir, `debug-${safeStamp}.png`), fullPage: true });
+    console.warn(
+      `[GMVMAX] No LIVE GMV Max plans found; skipped writing stale data. Page state: ${JSON.stringify(result.pageState)}`
+    );
+    return;
+  }
+
   await enrichPlanIncrements(path.join(outputDir, "gmvmax-records.jsonl"), result);
   await appendJsonl(path.join(outputDir, "gmvmax-records.jsonl"), result);
   await appendCsv(path.join(outputDir, "gmvmax-records.csv"), result);
@@ -481,22 +504,24 @@ async function collectOnce(page, config, outputDir) {
 
 async function enrichPlanIncrements(historyPath, result) {
   const previous = await readLatestRecordWithPlans(historyPath);
-  const previousByKey = new Map((previous?.plans || []).map((plan) => [plan.account || plan.name, plan]));
-  const currentKeys = new Set((result.plans || []).map((plan) => plan.account || plan.name).filter(Boolean));
+  const previousByKey = new Map((previous?.plans || []).filter((plan) => plan.account).map((plan) => [plan.account, plan]));
+  const currentKeys = new Set((result.plans || []).map((plan) => plan.account).filter(Boolean));
 
-  for (const [key, previousPlan] of previousByKey.entries()) {
-    if (currentKeys.has(key)) continue;
-    result.plans.push({
-      ...previousPlan,
-      intervalSpendIncrease: "0.00 MYR",
-      intervalOrderAmountIncrease: "0.00 MYR"
-    });
+  if (currentKeys.size > 0) {
+    for (const [key, previousPlan] of previousByKey.entries()) {
+      if (currentKeys.has(key)) continue;
+      result.plans.push({
+        ...previousPlan,
+        intervalSpendIncrease: "0.00 MYR",
+        intervalOrderAmountIncrease: "0.00 MYR"
+      });
+    }
   }
 
-  result.plans.sort((a, b) => accountRank(a.account || a.name) - accountRank(b.account || b.name));
+  result.plans.sort((a, b) => accountRank(a.account) - accountRank(b.account));
 
   for (const plan of result.plans || []) {
-    const previousPlan = previousByKey.get(plan.account || plan.name);
+    const previousPlan = previousByKey.get(plan.account);
     const spendIncrease = previousPlan ? parseMoney(plan.totalSpend) - parseMoney(previousPlan.totalSpend) : 0;
     const orderAmountIncrease = previousPlan ? parseMoney(plan.totalOrderAmount) - parseMoney(previousPlan.totalOrderAmount) : 0;
     plan.intervalSpendIncrease = moneyText(Math.max(0, spendIncrease));
@@ -564,6 +589,7 @@ async function appendPlanCsv(filePath, result) {
     await ensurePlanCsvHasBudgetColumn(filePath);
   }
   for (const plan of result.plans || []) {
+    if (!String(plan.account || "").trim()) continue;
     const row = [result.timestamp, plan.account, plan.name, plan.intervalSpendIncrease, plan.intervalOrderAmountIncrease, plan.totalSpend, plan.totalOrderAmount, plan.netSpend, result.url, plan.totalBudget].map(csvCell);
     await fs.appendFile(filePath, `${row.join(",")}\n`, "utf8");
   }
