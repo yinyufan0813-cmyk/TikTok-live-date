@@ -1,0 +1,9 @@
+{
+  "name": "GMV Max Monitor",
+  "short_name": "GMV Max",
+  "start_url": "/mobile.html",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "orientation": "portrait"
+}
