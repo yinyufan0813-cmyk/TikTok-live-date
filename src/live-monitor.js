@@ -586,10 +586,19 @@ async function clickLiveCandidate(page, candidate) {
 }
 
 async function collectLivePage(page, timestamp, config, outputDir, labelOverride = "") {
+  const originalUrl = page.url();
+  await page.setViewportSize({ width: 1920, height: 1080 }).catch(() => {});
   await page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 }).catch(() => {});
+  if (!isLiveDashboardUrl(page.url()) && isLiveDashboardUrl(originalUrl)) {
+    await page.goto(originalUrl, { waitUntil: "domcontentloaded", timeout: 90_000 }).catch(() => {});
+  }
+  if (!isLiveDashboardUrl(page.url())) {
+    throw new Error(`Expected LIVE dashboard, got ${page.url()}`);
+  }
   await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
   await acceptVisibleDialogs(page);
   await hoverMetricsPanel(page, config);
+  await ensureTapThroughMetricsVisible(page);
 
   const extracted = await page.evaluate(extractLiveDashboardMetrics, {
     selectors: config.liveAnalytics.selectors
@@ -641,6 +650,205 @@ async function hoverMetricsPanel(page, config) {
 
   await page.mouse.move(Math.floor(viewport.width * 0.52), Math.floor(viewport.height * 0.44)).catch(() => {});
   await page.waitForTimeout(800);
+}
+
+async function ensureTapThroughMetricsVisible(page) {
+  const hasTapThrough = await page.evaluate(() => {
+    const textOf = (node) => (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
+    const keyMetricCard = Array.from(document.querySelectorAll("div"))
+      .map((node) => ({ node, text: textOf(node), rect: node.getBoundingClientRect() }))
+      .filter((item) =>
+        item.text.includes("Attributed GMV") &&
+        item.text.includes("Current viewers") &&
+        item.rect.width > 500 &&
+        item.rect.height > 220
+      )
+      .sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height))[0];
+    return /Tap-through rate/i.test(keyMetricCard?.text || "");
+  }).catch(() => false);
+  if (hasTapThrough) return;
+
+  const editPoint = await page.evaluate(() => {
+    const textOf = (node) => (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
+    const keyMetricCard = Array.from(document.querySelectorAll("div"))
+      .map((node) => ({ node, text: textOf(node), rect: node.getBoundingClientRect() }))
+      .filter((item) =>
+        item.text.includes("Attributed GMV") &&
+        item.text.includes("Current viewers") &&
+        item.rect.width > 500 &&
+        item.rect.height > 220
+      )
+      .sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height))[0];
+    if (!keyMetricCard) return null;
+
+    const cardRect = keyMetricCard.rect;
+    const editIcon = Array.from(keyMetricCard.node.querySelectorAll("svg, [class*='edit'], [class*='Edit']"))
+      .map((node) => ({ node, rect: node.getBoundingClientRect(), className: String(node.className?.baseVal || node.className || "") }))
+      .filter((item) => /edit/i.test(item.className) && item.rect.width >= 8 && item.rect.height >= 8)
+      .sort((a, b) => a.rect.top - b.rect.top || b.rect.left - a.rect.left)[0];
+    if (editIcon) {
+      const button = editIcon.node.closest("button, [role='button']");
+      const rect = (button || editIcon.node).getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    }
+
+    const buttons = Array.from(keyMetricCard.node.querySelectorAll("button, [role='button']"))
+      .map((node) => ({ node, rect: node.getBoundingClientRect(), text: textOf(node) }))
+      .filter((item) => item.rect.width >= 8 && item.rect.height >= 8)
+      .sort((a, b) => a.rect.top - b.rect.top || b.rect.left - a.rect.left);
+    const target = buttons[0]?.rect;
+    if (target) {
+      return { x: target.x + target.width / 2, y: target.y + target.height / 2 };
+    }
+    return { x: cardRect.right - 40, y: cardRect.top + 40 };
+  }).catch(() => false);
+
+  if (!editPoint) return;
+  await page.mouse.click(editPoint.x, editPoint.y).catch(() => {});
+  await page.waitForTimeout(1200);
+
+  const editorOpened = await page.evaluate(() => /Select metrics \(up to 16\)|Custom metrics/i.test(document.body?.innerText || "")).catch(() => false);
+  if (!editorOpened) {
+    console.warn(`[${PREFIX}] Custom metrics editor did not open; Tap-through metrics remain hidden.`);
+    return;
+  }
+
+  const requiredLabels = ["Tap-through rate (via LIVE preview)", "Tap-through rate"];
+  const optionalLabels = [
+    "New followers",
+    "Comments",
+    "Customers",
+    "Product clicks",
+    "Est. GMV",
+    "Payment Rate",
+    "GMV with subsidies",
+    "AOV",
+  ];
+
+  const getSelectedMetricState = async () => page.evaluate(() => {
+    const bodyText = document.body?.innerText || "";
+    const countMatch = bodyText.match(/(\d+)\s+metrics selected/i);
+    const selectedText = bodyText.split(/\d+\s+metrics selected/i)[1]?.split(/\bCancel\b|\bApply\b|取消|应用|确定|确认/i)[0] || "";
+    const selectedMetrics = selectedText
+      .split(/\n+/)
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    return {
+      count: countMatch ? Number(countMatch[1]) : 0,
+      selectedText,
+      selectedMetrics,
+    };
+  }).catch(() => ({ count: 0, selectedText: "", selectedMetrics: [] }));
+
+  const isSelected = async (label) => {
+    const state = await getSelectedMetricState();
+    return state.selectedMetrics.some((metric) => metric === label);
+  };
+
+  const metricClickPoint = async (label, mode) => page.evaluate(({ label, mode }) => {
+    const textOf = (node) => (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
+    const isVisible = (rect) => rect.width > 2 && rect.height > 2 && rect.bottom > 0 && rect.right > 0;
+    const modal = Array.from(document.querySelectorAll("div"))
+      .map((node) => ({ node, text: textOf(node), rect: node.getBoundingClientRect() }))
+      .filter((item) =>
+        item.text.includes("Custom metrics") &&
+        item.text.includes("Select metrics") &&
+        item.rect.width > 800 &&
+        item.rect.height > 500 &&
+        isVisible(item.rect)
+      )
+      .sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height))[0];
+    if (!modal) return null;
+
+    const modalRect = modal.rect;
+    const selectedBoundary = modalRect.left + modalRect.width * 0.72;
+    const matchesLabel = (text) => {
+      if (text === label || text.startsWith(label)) return true;
+      return label.includes("via LIVE") && text.includes("Tap-through rate") && text.includes("LIVE") && text.includes("preview");
+    };
+
+    const candidates = Array.from(modal.node.querySelectorAll("*"))
+      .map((node) => ({ node, text: textOf(node), rect: node.getBoundingClientRect() }))
+      .filter((item) => matchesLabel(item.text) && isVisible(item.rect));
+
+    const candidate = candidates
+      .filter((item) => mode === "remove" ? item.rect.left > selectedBoundary : item.rect.left < selectedBoundary)
+      .sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height))[0];
+    if (!candidate) return null;
+
+    let row = candidate.node;
+    for (let i = 0; i < 6 && row?.parentElement; i += 1) {
+      const rect = row.getBoundingClientRect();
+      const text = textOf(row);
+      if (
+        matchesLabel(text) &&
+        rect.width > 120 &&
+        rect.height >= 24 &&
+        rect.height <= 90 &&
+        isVisible(rect)
+      ) {
+        const x = mode === "remove" ? rect.right - 18 : rect.left + 12;
+        return { x, y: rect.top + rect.height / 2 };
+      }
+      row = row.parentElement;
+    }
+
+    const rect = candidate.rect;
+    const x = mode === "remove" ? rect.right + 24 : rect.left - 18;
+    return { x, y: rect.top + rect.height / 2 };
+  }, { label, mode }).catch(() => null);
+
+  const clickMetric = async (label, mode) => {
+    const point = await metricClickPoint(label, mode);
+    if (!point) return false;
+    await page.mouse.click(point.x, point.y).catch(() => {});
+    await page.waitForTimeout(350);
+    return true;
+  };
+
+  let changed = false;
+  const initialState = await getSelectedMetricState();
+  console.log(`[${PREFIX}] Custom metrics selected count before Tap-through sync: ${initialState.count}.`);
+  for (const label of optionalLabels) {
+    const missingRequiredCount = (await Promise.all(requiredLabels.map(async (required) => !(await isSelected(required))))).filter(Boolean).length;
+    const state = await getSelectedMetricState();
+    if (missingRequiredCount === 0 || state.count <= 16 - missingRequiredCount) break;
+    if (await isSelected(label)) {
+      const removed = await clickMetric(label, "remove");
+      console.log(`[${PREFIX}] ${removed ? "Removed" : "Could not remove"} optional metric: ${label}`);
+      changed = removed || changed;
+    }
+  }
+
+  for (const label of requiredLabels) {
+    if (!(await isSelected(label))) {
+      const selected = await clickMetric(label, "select");
+      console.log(`[${PREFIX}] ${selected ? "Selected" : "Could not select"} required metric: ${label}`);
+      changed = selected || changed;
+    }
+  }
+
+  const finalState = await getSelectedMetricState();
+  const hasRequired = requiredLabels.every((label) =>
+    finalState.selectedMetrics.some((metric) => metric === label)
+  );
+  if (!hasRequired) {
+    console.warn(`[${PREFIX}] Tap-through metrics were not selected. Current selected metrics: ${finalState.selectedText.replace(/\s+/g, " ").trim()}`);
+    const cancel = page.getByText(/Cancel|取消/).last();
+    if (await cancel.count().catch(() => 0)) await cancel.click({ timeout: 2000, force: true }).catch(() => {});
+    return;
+  }
+
+  const apply = page.getByText(/Apply|应用|确定|确认/).last();
+  if (await apply.count().catch(() => 0)) {
+    await apply.click({ timeout: 3000, force: true }).catch(() => {});
+    changed = true;
+  }
+
+  if (changed) {
+    await page.waitForTimeout(1800);
+    await hoverMetricsPanel(page, { liveAnalytics: { selectors: {} } }).catch(() => {});
+  }
 }
 
 async function acceptVisibleDialogs(page) {

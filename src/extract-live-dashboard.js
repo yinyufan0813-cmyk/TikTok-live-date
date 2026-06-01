@@ -98,6 +98,7 @@ export function extractLiveDashboardMetrics(config = {}) {
       if (!ownText || ownText.length > 120) continue;
       const matchedLabel = labels.find((label) => ownText.toLowerCase() === label.toLowerCase() || ownText.toLowerCase().startsWith(`${label.toLowerCase()} `));
       if (!matchedLabel) continue;
+      if (matchedLabel.toLowerCase() === "tap-through rate" && /\(via\s+live/i.test(ownText)) continue;
 
       const localText = ownText.slice(matchedLabel.length).trim();
       const localMatch = localText.match(new RegExp(`^\\s*(${valuePattern})\\s*$`, "i"));
@@ -130,14 +131,12 @@ export function extractLiveDashboardMetrics(config = {}) {
 
   const tapThroughRateViaLivePreview =
     valueFromSelector("tapThroughRateViaLivePreview") ||
-    valueBetweenLabels("Tap-through rate (via LIVE preview)", "Tap-through rate") ||
-    valueAfterLabel(["Tap-through rate (via LIVE preview)", "Tap-through rate (via LIV", "via LIVE preview", "LIVE preview"]);
+    directValueAfterLabel(["Tap-through rate (via LIVE preview)", "Tap-through rate (via LIVE pre...", "Tap-through rate (via LIV"], ["Tap-through rate", "LIVE CTR"], "[-+]?\\d[\\d,.]*(?:\\.\\d+)?\\s*%");
 
   const tapThroughRate =
     valueFromSelector("tapThroughRate") ||
-    valueBetweenLabels("Tap-through rate", "LIVE CTR") ||
-    extractPlainTapThroughRate(bodyText) ||
-    valueAfterLabel(["Tap-through rate", "商品点击率"]);
+    directValueAfterLabel(["Tap-through rate", "商品点击率"], ["LIVE CTR", "Order rate", "Ads Cost"], "[-+]?\\d[\\d,.]*(?:\\.\\d+)?\\s*%") ||
+    extractPlainTapThroughRate(bodyText);
 
   const adsCost =
     valueFromSelector("adsCost") ||
