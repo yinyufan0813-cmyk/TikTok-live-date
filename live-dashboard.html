@@ -225,13 +225,35 @@
     function latestGroups(rows) {
       const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
       const currentTs = timestamps.at(-1);
-      const current = dedupeRows(rows.filter(row => row.timestamp === currentTs));
-      const previousByRoom = new Map();
-      for (const row of dedupeRows(rows.filter(row => row.timestamp && row.timestamp < currentTs))) {
-        if (!row.timestamp || row.timestamp >= currentTs) continue;
-        previousByRoom.set(rowKey(row), row);
+      const groups = timestamps.map(timestamp => ({
+        timestamp,
+        rows: dedupeRows(rows.filter(row => row.timestamp === timestamp))
+      }));
+      const recentGroups = groups.slice(-6);
+      const expectedCount = recentGroups.reduce((max, group) => Math.max(max, group.rows.length), 0);
+      const byRoom = new Map();
+      for (let index = recentGroups.length - 1; index >= 0; index -= 1) {
+        for (const row of recentGroups[index].rows) {
+          const key = rowKey(row);
+          if (key && !byRoom.has(key)) byRoom.set(key, row);
+        }
+        if (byRoom.size >= expectedCount) break;
       }
+      const current = [...byRoom.values()];
+      const previousByRoom = previousRowsByRoom(rows, current);
       return { currentTs, current, previousByRoom };
+    }
+
+    function previousRowsByRoom(rows, currentRows) {
+      const currentByRoom = new Map(currentRows.map(row => [rowKey(row), row]));
+      const previousByRoom = new Map();
+      for (const row of rows) {
+        const key = rowKey(row);
+        const current = currentByRoom.get(key);
+        if (!current || !row.timestamp || row.timestamp >= current.timestamp) continue;
+        previousByRoom.set(key, row);
+      }
+      return previousByRoom;
     }
 
     function dedupeRows(rows) {

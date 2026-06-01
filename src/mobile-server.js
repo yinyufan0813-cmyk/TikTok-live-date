@@ -145,12 +145,7 @@ function buildGmvPayload(rows) {
 }
 
 function buildLivePayload(rows) {
-  const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
-  const currentTs = timestamps.at(-1) || null;
-  const previousTs = timestamps.at(-2) || null;
-  const currentRows = dedupeLiveRows(rows.filter(row => row.timestamp === currentTs));
-  const previousRows = dedupeLiveRows(rows.filter(row => row.timestamp === previousTs));
-  const previousByRoom = new Map(previousRows.map(row => [liveRowKey(row), row]));
+  const { currentTs, previousTs, currentRows, previousByRoom } = latestLiveRowsByRoom(rows);
 
   const rooms = currentRows.map((row, index) => {
     const key = liveRowKey(row) || `直播间 ${index + 1}`;
@@ -168,6 +163,7 @@ function buildLivePayload(rows) {
   });
 
   const currentViewers = currentRows.reduce((total, row) => total + numberFromMetric(row.current_viewers), 0);
+  const previousRows = Array.from(previousByRoom.values());
   const previousViewers = previousRows.reduce((total, row) => total + numberFromMetric(row.current_viewers), 0);
   const adsCost = currentRows.reduce((total, row) => total + numberFromMetric(row.ads_cost), 0);
   const previousAdsCost = previousRows.reduce((total, row) => total + numberFromMetric(row.ads_cost), 0);
@@ -185,6 +181,43 @@ function buildLivePayload(rows) {
     },
     rooms
   };
+}
+
+function latestLiveRowsByRoom(rows) {
+  const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
+  const groups = timestamps.map(timestamp => ({
+    timestamp,
+    rows: dedupeLiveRows(rows.filter(row => row.timestamp === timestamp))
+  }));
+  const recentGroups = groups.slice(-6);
+  const expectedRoomCount = recentGroups.reduce((max, group) => Math.max(max, group.rows.length), 0);
+  const byRoom = new Map();
+
+  for (let index = recentGroups.length - 1; index >= 0; index -= 1) {
+    for (const row of recentGroups[index].rows) {
+      const key = liveRowKey(row);
+      if (key && !byRoom.has(key)) byRoom.set(key, row);
+    }
+    if (byRoom.size >= expectedRoomCount) break;
+  }
+
+  const currentRows = Array.from(byRoom.values());
+  const currentTs = timestamps.at(-1) || null;
+  const previousTs = timestamps.at(-2) || null;
+  const previousByRoom = previousLiveRowsByRoom(rows, currentRows);
+  return { currentTs, previousTs, currentRows, previousByRoom };
+}
+
+function previousLiveRowsByRoom(rows, currentRows) {
+  const currentByRoom = new Map(currentRows.map(row => [liveRowKey(row), row]));
+  const previousByRoom = new Map();
+  for (const row of rows) {
+    const key = liveRowKey(row);
+    const current = currentByRoom.get(key);
+    if (!current || !row.timestamp || row.timestamp >= current.timestamp) continue;
+    previousByRoom.set(key, row);
+  }
+  return previousByRoom;
 }
 
 function dedupeLiveRows(rows) {

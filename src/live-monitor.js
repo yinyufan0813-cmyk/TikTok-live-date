@@ -62,13 +62,13 @@ async function main() {
     return;
   }
 
-  const overviewPage = await findOrOpenOverviewPage(session.context, config);
+  let overviewPage = await findOrOpenOverviewPage(session.context, config);
   const livePages = new Map();
   console.log(`[${PREFIX}] Attached overview: ${await safeTitle(overviewPage)} | ${overviewPage.url()}`);
   console.log(`[${PREFIX}] Started. Refresh interval: ${intervalMs / 60_000} minute(s).`);
 
   do {
-    await collectOnce({ context: session.context, overviewPage, livePages, config, outputDir });
+    overviewPage = await collectOnce({ context: session.context, overviewPage, livePages, config, outputDir });
     if (once) break;
     await wait(intervalMs);
   } while (true);
@@ -144,6 +144,7 @@ async function findOrOpenOverviewPage(context, config) {
   const overviewUrl = config.liveAnalytics.overviewUrl;
   const scored = [];
   for (const page of context.pages()) {
+    if (page.isClosed()) continue;
     const url = page.url();
     if (!url || url.startsWith("chrome://") || url.startsWith("devtools://")) continue;
     const score = scoreOverviewPage(url, overviewUrl);
@@ -178,16 +179,23 @@ function safelyParseUrl(value) {
 async function collectOnce({ context, overviewPage, livePages, config, outputDir }) {
   const timestamp = new Date().toISOString();
   console.log(`[${PREFIX}] ${timestamp} discovering LIVE rooms...`);
+  overviewPage = await ensureOverviewPage(context, overviewPage, config);
 
+  let discoveredRoomCount = null;
   if (config.liveAnalytics.discoverEveryRun !== false) {
-    await syncLivePages(context, overviewPage, livePages, config);
+    discoveredRoomCount = await syncLivePages(context, overviewPage, livePages, config);
   } else {
     syncExistingLivePages(context, livePages);
   }
 
+  if (config.liveAnalytics.discoverEveryRun !== false && discoveredRoomCount == null) {
+    console.warn(`[${PREFIX}] Skipped this LIVE sample because the overview LIVE streams list was not rediscovered.`);
+    return overviewPage;
+  }
+
   if (livePages.size === 0) {
     console.warn(`[${PREFIX}] No LIVE dashboard pages found. Hover/click the LIVE streams list once or add selectors in config.json.`);
-    return;
+    return overviewPage;
   }
 
   await dedupeLivePages(context, overviewPage, livePages);
@@ -234,11 +242,22 @@ async function collectOnce({ context, overviewPage, livePages, config, outputDir
   await closeUntrackedLiveDashboardPages(context, overviewPage, livePages);
 
   const uniqueRecords = dedupeLiveRecords(records);
-  if (uniqueRecords.length === 0) return;
+  if (uniqueRecords.length === 0) return overviewPage;
+  if (Number.isFinite(discoveredRoomCount) && uniqueRecords.length < discoveredRoomCount) {
+    console.warn(`[${PREFIX}] Skipped partial LIVE sample: collected ${uniqueRecords.length}/${discoveredRoomCount} discovered room(s).`);
+    return overviewPage;
+  }
   await appendJsonl(path.join(outputDir, "live-room-records.jsonl"), { timestamp, records: uniqueRecords });
   await appendLiveCsv(path.join(outputDir, "live-room-records.csv"), uniqueRecords);
   console.log(`[${PREFIX}] Saved ${uniqueRecords.length} LIVE room record(s).`);
   await closeUntrackedLiveDashboardPages(context, overviewPage, livePages);
+  return overviewPage;
+}
+
+async function ensureOverviewPage(context, overviewPage, config) {
+  if (overviewPage && !overviewPage.isClosed()) return overviewPage;
+  console.warn(`[${PREFIX}] Overview page was closed. Reopening ${config.liveAnalytics.overviewUrl}`);
+  return findOrOpenOverviewPage(context, config);
 }
 
 function syncExistingLivePages(context, livePages) {
@@ -343,7 +362,7 @@ async function syncLivePages(context, overviewPage, livePages, config) {
     if (livePages.size === 0) {
       console.warn(`[${PREFIX}] LIVE streams trigger was not found. No active LIVE rooms were discovered on the overview page.`);
     }
-    return;
+    return null;
   }
   const candidates = await collectLiveRoomCandidates(overviewPage, config);
   const filtered = filterCandidates(candidates, config).slice(0, config.liveAnalytics.maxRooms || 12);
@@ -352,7 +371,7 @@ async function syncLivePages(context, overviewPage, livePages, config) {
     await closeLiveDashboardPages(context, overviewPage);
     livePages.clear();
     console.warn(`[${PREFIX}] LIVE streams menu opened, but no room candidates were found.`);
-    return;
+    return 0;
   }
 
   console.log(`[${PREFIX}] Found ${filtered.length} LIVE room candidate(s): ${filtered.map((candidate) => candidate.handle || candidate.key).join(", ")}`);
@@ -385,6 +404,7 @@ async function syncLivePages(context, overviewPage, livePages, config) {
   }
   await wait(1500);
   await closeUntrackedLiveDashboardPages(context, overviewPage, livePages);
+  return filtered.length;
 }
 
 async function closeLiveDashboardPages(context, keepPage = null) {
