@@ -8,7 +8,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const port = Number(process.env.GMVMAX_MOBILE_PORT || 8788);
 const host = process.env.GMVMAX_MOBILE_HOST || "0.0.0.0";
-const csvPath = path.join(rootDir, "logs", "gmvmax-plan-records.csv");
+const gmvCsvPath = path.join(rootDir, "logs", "gmvmax-plan-records.csv");
+const liveCsvPath = path.join(rootDir, "logs", "live-room-records.csv");
 
 const staticFiles = {
   "/": { file: "mobile.html", type: "text/html; charset=utf-8" },
@@ -59,6 +60,14 @@ function numberFromMoney(value) {
   return match ? Number(match[0]) : 0;
 }
 
+function numberFromMetric(value) {
+  const text = String(value || "").replaceAll(",", "").trim();
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  if (!match) return 0;
+  const multiplier = /m\b/i.test(text) ? 1_000_000 : /k\b/i.test(text) ? 1_000 : 1;
+  return Number(match[0]) * multiplier;
+}
+
 function roi(orderAmount, spend) {
   return spend ? orderAmount / spend : null;
 }
@@ -73,7 +82,7 @@ function sum(rows, field) {
   return rows.reduce((total, row) => total + numberFromMoney(row[field]), 0);
 }
 
-function buildPayload(rows) {
+function buildGmvPayload(rows) {
   const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
   const currentTs = timestamps.at(-1) || null;
   const previousTs = timestamps.at(-2) || null;
@@ -134,9 +143,74 @@ function buildPayload(rows) {
   };
 }
 
+function buildLivePayload(rows) {
+  const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
+  const currentTs = timestamps.at(-1) || null;
+  const previousTs = timestamps.at(-2) || null;
+  const currentRows = rows.filter(row => row.timestamp === currentTs);
+  const previousRows = rows.filter(row => row.timestamp === previousTs);
+  const previousByRoom = new Map(previousRows.map(row => [row.room || row.url, row]));
+
+  const rooms = currentRows.map((row, index) => {
+    const key = row.room || row.url || `直播间 ${index + 1}`;
+    const previous = previousByRoom.get(key) || {};
+    return {
+      room: key,
+      currentViewers: metric(numberFromMetric(row.current_viewers), numberFromMetric(previous.current_viewers)),
+      tapThroughRateViaLivePreview: metric(numberFromMetric(row.tap_through_rate_via_live_preview), numberFromMetric(previous.tap_through_rate_via_live_preview)),
+      tapThroughRate: metric(numberFromMetric(row.tap_through_rate), numberFromMetric(previous.tap_through_rate)),
+      liveCtr: metric(numberFromMetric(row.live_ctr), numberFromMetric(previous.live_ctr)),
+      orderRateSkuOrders: metric(numberFromMetric(row.order_rate_sku_orders), numberFromMetric(previous.order_rate_sku_orders)),
+      adsCost: metric(numberFromMetric(row.ads_cost), numberFromMetric(previous.ads_cost)),
+      gmvMaxRoi: metric(numberFromMetric(row.gmv_max_roi), numberFromMetric(previous.gmv_max_roi))
+    };
+  });
+
+  const currentViewers = currentRows.reduce((total, row) => total + numberFromMetric(row.current_viewers), 0);
+  const previousViewers = previousRows.reduce((total, row) => total + numberFromMetric(row.current_viewers), 0);
+  const adsCost = currentRows.reduce((total, row) => total + numberFromMetric(row.ads_cost), 0);
+  const previousAdsCost = previousRows.reduce((total, row) => total + numberFromMetric(row.ads_cost), 0);
+  const avgRoi = average(currentRows, "gmv_max_roi");
+  const previousAvgRoi = average(previousRows, "gmv_max_roi");
+
+  return {
+    updatedAt: currentTs,
+    previousAt: previousTs,
+    roomCount: rooms.length,
+    summary: {
+      currentViewers: metric(currentViewers, previousViewers),
+      adsCost: metric(adsCost, previousAdsCost),
+      avgRoi: metric(avgRoi, previousAvgRoi)
+    },
+    rooms
+  };
+}
+
+function average(rows, field) {
+  const values = rows.map(row => numberFromMetric(row[field])).filter(value => Number.isFinite(value));
+  if (!values.length) return 0;
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+async function readRows(filePath) {
+  try {
+    return parseCsv(await fs.readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 async function latestData() {
-  const text = await fs.readFile(csvPath, "utf8");
-  return buildPayload(parseCsv(text));
+  const [gmvRows, liveRows] = await Promise.all([
+    readRows(gmvCsvPath),
+    readRows(liveCsvPath)
+  ]);
+  return {
+    checkedAt: new Date().toISOString(),
+    gmv: buildGmvPayload(gmvRows),
+    live: buildLivePayload(liveRows)
+  };
 }
 
 function localUrls() {

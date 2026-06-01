@@ -21,6 +21,7 @@
       --red: #ef4444;
       --yellow: #fbbf24;
       --blue: #38bdf8;
+      --orange: #f97316;
       --violet: #a78bfa;
     }
 
@@ -65,6 +66,24 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
       margin-bottom: 12px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 16px 0 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .section-title span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      text-align: right;
     }
 
     .tile,
@@ -118,6 +137,8 @@
     .spend { color: var(--yellow); }
     .gmv { color: var(--blue); }
     .roi { color: var(--violet); }
+    .live { color: var(--green); }
+    .cost { color: var(--orange); }
     .total { color: #e5e7eb; }
 
     .cards {
@@ -171,7 +192,7 @@
 <body>
   <main class="app">
     <header>
-      <h1>LIVE GMV Max</h1>
+      <h1>GMVMAX + LIVE</h1>
       <div class="status" id="status">读取中...</div>
     </header>
     <section id="app"></section>
@@ -194,6 +215,17 @@
       return Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
+    function compact(value) {
+      const number = Number(value || 0);
+      if (Math.abs(number) >= 1000000) return `${(number / 1000000).toFixed(2)}M`;
+      if (Math.abs(number) >= 1000) return `${(number / 1000).toFixed(2)}K`;
+      return number.toLocaleString("en-US", { maximumFractionDigits: 2 });
+    }
+
+    function percent(value) {
+      return `${Number(value || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
+    }
+
     function arrow(metric) {
       const symbol = metric.direction === "up" ? "▲" : metric.direction === "down" ? "▼" : "→";
       return `<span class="arrow ${metric.direction}">${symbol}</span>`;
@@ -212,41 +244,82 @@
       `;
     }
 
-    function render(data) {
-      status.textContent = data.updatedAt ? `更新 ${new Date(data.updatedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : "暂无时间";
+    function timeText(timestamp) {
+      return timestamp ? new Date(timestamp).toLocaleTimeString("zh-CN", { hour12: false }) : "-";
+    }
 
-      if (!data.accounts.length) {
-        app.innerHTML = `<div class="empty">还没有采集到账号数据，等待后台脚本写入 CSV。</div>`;
-        return;
-      }
-
-      const summary = `
+    function renderGmv(gmv) {
+      if (!gmv.accounts.length) return `<div class="empty">还没有采集到 GMVMAX 账号数据。</div>`;
+      return `
         <div class="summary">
-          ${metricBlock("新增消耗", data.summary.intervalSpend, "spend", money)}
-          ${metricBlock("新增成交", data.summary.intervalOrder, "gmv", money)}
-          ${metricBlock("新增 ROI", data.summary.intervalRoi, "roi", roi)}
-          ${metricBlock("总 ROI", data.summary.totalRoi, "roi", roi)}
+          ${metricBlock("新增消耗", gmv.summary.intervalSpend, "spend", money)}
+          ${metricBlock("新增成交", gmv.summary.intervalOrder, "gmv", money)}
+          ${metricBlock("新增 ROI", gmv.summary.intervalRoi, "roi", roi)}
+          ${metricBlock("总 ROI", gmv.summary.totalRoi, "roi", roi)}
+        </div>
+        <div class="cards">
+          ${gmv.accounts.map(account => `
+            <article class="card">
+              <div class="account">
+                <strong>${account.account}</strong>
+                <span class="campaign">${account.campaign || ""}</span>
+              </div>
+              <div class="grid">
+                ${metricBlock("新增消耗", account.intervalSpend, "spend", money)}
+                ${metricBlock("新增成交", account.intervalOrder, "gmv", money)}
+                ${metricBlock("新增 ROI", account.intervalRoi, "roi", roi)}
+                ${metricBlock("总 ROI", account.totalRoi, "roi", roi)}
+                ${metricBlock("总消耗", account.totalSpend, "total", money)}
+                ${metricBlock("总成交", account.totalOrder, "total", money)}
+              </div>
+            </article>
+          `).join("")}
         </div>
       `;
+    }
 
-      const cards = data.accounts.map(account => `
-        <article class="card">
-          <div class="account">
-            <strong>${account.account}</strong>
-            <span class="campaign">${account.campaign || ""}</span>
-          </div>
-          <div class="grid">
-            ${metricBlock("新增消耗", account.intervalSpend, "spend", money)}
-            ${metricBlock("新增成交", account.intervalOrder, "gmv", money)}
-            ${metricBlock("新增 ROI", account.intervalRoi, "roi", roi)}
-            ${metricBlock("总 ROI", account.totalRoi, "roi", roi)}
-            ${metricBlock("总消耗", account.totalSpend, "total", money)}
-            ${metricBlock("总成交", account.totalOrder, "total", money)}
-          </div>
-        </article>
-      `).join("");
+    function renderLive(live) {
+      if (!live.rooms.length) return `<div class="empty">还没有采集到直播间数据。</div>`;
+      return `
+        <div class="summary">
+          ${metricBlock("直播间数量", { value: live.roomCount, diff: 0, direction: "flat" }, "live", compact)}
+          ${metricBlock("实时在线人数", live.summary.currentViewers, "live", compact)}
+          ${metricBlock("Ads Cost", live.summary.adsCost, "cost", compact)}
+          ${metricBlock("平均 ROI", live.summary.avgRoi, "roi", roi)}
+        </div>
+        <div class="cards">
+          ${live.rooms.map(room => `
+            <article class="card">
+              <div class="account">
+                <strong>${room.room}</strong>
+                <span class="campaign">LIVE</span>
+              </div>
+              <div class="grid">
+                ${metricBlock("实时在线人数", room.currentViewers, "live", compact)}
+                ${metricBlock("LIVE preview TTR", room.tapThroughRateViaLivePreview, "gmv", percent)}
+                ${metricBlock("Tap-through rate", room.tapThroughRate, "gmv", percent)}
+                ${metricBlock("LIVE CTR", room.liveCtr, "spend", percent)}
+                ${metricBlock("Order rate", room.orderRateSkuOrders, "live", percent)}
+                ${metricBlock("Ads Cost", room.adsCost, "cost", compact)}
+                ${metricBlock("GMV Max ROI", room.gmvMaxRoi, "roi", roi)}
+              </div>
+            </article>
+          `).join("")}
+        </div>
+      `;
+    }
 
-      app.innerHTML = `${summary}<div class="cards">${cards}</div>`;
+    function render(data) {
+      const gmv = data.gmv || { accounts: [], summary: {} };
+      const live = data.live || { rooms: [], summary: {} };
+      status.textContent = `GMV ${timeText(gmv.updatedAt)} | LIVE ${timeText(live.updatedAt)}`;
+
+      app.innerHTML = `
+        <div class="section-title">GMVMAX 广告效果 <span>${timeText(gmv.updatedAt)}</span></div>
+        ${renderGmv(gmv)}
+        <div class="section-title">直播间实时指标 <span>${timeText(live.updatedAt)}</span></div>
+        ${renderLive(live)}
+      `;
     }
 
     async function load() {
