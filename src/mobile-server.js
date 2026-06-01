@@ -147,15 +147,15 @@ function buildLivePayload(rows) {
   const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
   const currentTs = timestamps.at(-1) || null;
   const previousTs = timestamps.at(-2) || null;
-  const currentRows = rows.filter(row => row.timestamp === currentTs);
-  const previousRows = rows.filter(row => row.timestamp === previousTs);
-  const previousByRoom = new Map(previousRows.map(row => [row.room || row.url, row]));
+  const currentRows = dedupeLiveRows(rows.filter(row => row.timestamp === currentTs));
+  const previousRows = dedupeLiveRows(rows.filter(row => row.timestamp === previousTs));
+  const previousByRoom = new Map(previousRows.map(row => [liveRowKey(row), row]));
 
   const rooms = currentRows.map((row, index) => {
-    const key = row.room || row.url || `直播间 ${index + 1}`;
+    const key = liveRowKey(row) || `直播间 ${index + 1}`;
     const previous = previousByRoom.get(key) || {};
     return {
-      room: key,
+      room: displayLiveRoomName(row, index),
       currentViewers: metric(numberFromMetric(row.current_viewers), numberFromMetric(previous.current_viewers)),
       tapThroughRateViaLivePreview: metric(numberFromMetric(row.tap_through_rate_via_live_preview), numberFromMetric(previous.tap_through_rate_via_live_preview)),
       tapThroughRate: metric(numberFromMetric(row.tap_through_rate), numberFromMetric(previous.tap_through_rate)),
@@ -184,6 +184,44 @@ function buildLivePayload(rows) {
     },
     rooms
   };
+}
+
+function dedupeLiveRows(rows) {
+  const byKey = new Map();
+  for (const row of rows) {
+    const key = liveRowKey(row);
+    const existing = byKey.get(key);
+    if (!existing || liveRowScore(row) > liveRowScore(existing)) {
+      byKey.set(key, row);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+function liveRowKey(row) {
+  return roomIdFromUrl(row.url) || row.room || row.url || "";
+}
+
+function roomIdFromUrl(value = "") {
+  try {
+    return new URL(value).searchParams.get("room_id") || "";
+  } catch {
+    return "";
+  }
+}
+
+function displayLiveRoomName(row, index) {
+  if (row.room && !/^room-\d+/i.test(row.room)) return row.room;
+  return row.room || `直播间 ${index + 1}`;
+}
+
+function liveRowScore(row) {
+  let score = 0;
+  if (row.room && !/^room-\d+/i.test(row.room)) score += 10;
+  for (const field of ["current_viewers", "tap_through_rate_via_live_preview", "tap_through_rate", "live_ctr", "order_rate_sku_orders", "ads_cost", "gmv_max_roi"]) {
+    if (row[field]) score += 1;
+  }
+  return score;
 }
 
 function average(rows, field) {

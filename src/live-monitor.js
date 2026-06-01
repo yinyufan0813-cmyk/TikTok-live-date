@@ -190,7 +190,10 @@ async function collectOnce({ context, overviewPage, livePages, config, outputDir
     return;
   }
 
+  await dedupeLivePages(context, overviewPage, livePages);
+
   const records = [];
+  const seenRoomIds = new Set();
   for (const [key, entry] of livePages.entries()) {
     if (entry.page.isClosed()) {
       const replacement = findLivePageReplacement(context, entry);
@@ -202,6 +205,13 @@ async function collectOnce({ context, overviewPage, livePages, config, outputDir
         continue;
       }
     }
+    const roomId = liveRoomIdFromUrl(entry.page.url() || entry.url || "");
+    if (roomId && seenRoomIds.has(roomId)) {
+      await entry.page?.close?.().catch(() => {});
+      livePages.delete(key);
+      continue;
+    }
+    if (roomId) seenRoomIds.add(roomId);
     const record = await collectLivePage(entry.page, timestamp, config, outputDir, entry.label).catch(async (error) => {
       if (isClosedTargetError(error)) {
         const replacement = findLivePageReplacement(context, entry);
@@ -223,10 +233,11 @@ async function collectOnce({ context, overviewPage, livePages, config, outputDir
   await wait(1500);
   await closeUntrackedLiveDashboardPages(context, overviewPage, livePages);
 
-  if (records.length === 0) return;
-  await appendJsonl(path.join(outputDir, "live-room-records.jsonl"), { timestamp, records });
-  await appendLiveCsv(path.join(outputDir, "live-room-records.csv"), records);
-  console.log(`[${PREFIX}] Saved ${records.length} LIVE room record(s).`);
+  const uniqueRecords = dedupeLiveRecords(records);
+  if (uniqueRecords.length === 0) return;
+  await appendJsonl(path.join(outputDir, "live-room-records.jsonl"), { timestamp, records: uniqueRecords });
+  await appendLiveCsv(path.join(outputDir, "live-room-records.csv"), uniqueRecords);
+  console.log(`[${PREFIX}] Saved ${uniqueRecords.length} LIVE room record(s).`);
   await closeUntrackedLiveDashboardPages(context, overviewPage, livePages);
 }
 
@@ -234,7 +245,10 @@ function syncExistingLivePages(context, livePages) {
   for (const page of context.pages()) {
     const url = page.url();
     if (!isLiveDashboardUrl(url)) continue;
-    livePages.set(normalizeUrl(url), { page, label: liveLabelFromUrl(url), url });
+    const key = livePageKey(url);
+    const existing = livePages.get(key);
+    if (existing && existing.page !== page) continue;
+    livePages.set(key, { page, label: existing?.label || liveLabelFromUrl(url), url });
   }
 }
 
@@ -255,6 +269,61 @@ function findLivePageReplacement(context, entry) {
   const roomId = liveRoomIdFromUrl(entry.url || entry.page?.url?.() || "");
   const pages = context.pages().filter((page) => !page.isClosed() && isLiveDashboardUrl(page.url()));
   return pages.find((page) => roomId && liveRoomIdFromUrl(page.url()) === roomId) || pages.find((page) => normalizeUrl(page.url()) === normalizeUrl(entry.url || "")) || null;
+}
+
+async function dedupeLivePages(context, keepPage, livePages) {
+  const byRoomId = new Map();
+  for (const [key, entry] of Array.from(livePages.entries())) {
+    if (!entry.page || entry.page.isClosed()) {
+      livePages.delete(key);
+      continue;
+    }
+    const url = entry.page.url() || entry.url || "";
+    if (!isLiveDashboardUrl(url)) {
+      livePages.delete(key);
+      continue;
+    }
+    const roomId = liveRoomIdFromUrl(url);
+    if (!roomId) continue;
+    const existing = byRoomId.get(roomId);
+    if (!existing) {
+      byRoomId.set(roomId, { key, entry });
+      continue;
+    }
+    const existingHasHandle = /^@/.test(existing.entry.label || "");
+    const currentHasHandle = /^@/.test(entry.label || "");
+    const keepCurrent = currentHasHandle && !existingHasHandle;
+    const remove = keepCurrent ? existing : { key, entry };
+    if (keepCurrent) byRoomId.set(roomId, { key, entry });
+    await remove.entry.page?.close?.().catch(() => {});
+    livePages.delete(remove.key);
+  }
+
+  for (const [roomId, { key, entry }] of byRoomId.entries()) {
+    if (key === roomId) continue;
+    livePages.delete(key);
+    livePages.set(roomId, entry);
+  }
+  await closeUntrackedLiveDashboardPages(context, keepPage, livePages);
+}
+
+function dedupeLiveRecords(records) {
+  const byRoom = new Map();
+  for (const record of records) {
+    const roomId = liveRoomIdFromUrl(record.url || "");
+    const key = roomId || record.url || record.room;
+    const existing = byRoom.get(key);
+    if (!existing) {
+      byRoom.set(key, record);
+      continue;
+    }
+    const existingHasHandle = /^@/.test(existing.room || "");
+    const currentHasHandle = /^@/.test(record.room || "");
+    if (currentHasHandle && !existingHasHandle) {
+      byRoom.set(key, record);
+    }
+  }
+  return Array.from(byRoom.values());
 }
 
 function isClosedTargetError(error) {
@@ -288,15 +357,17 @@ async function syncLivePages(context, overviewPage, livePages, config) {
 
   console.log(`[${PREFIX}] Found ${filtered.length} LIVE room candidate(s): ${filtered.map((candidate) => candidate.handle || candidate.key).join(", ")}`);
   const activeKeys = new Set(filtered.map((candidate, index) => candidate.key || candidate.href || `room-${index + 1}`));
+  const activeLabels = new Set(filtered.map((candidate) => candidate.handle).filter(Boolean));
   for (const [key, entry] of livePages.entries()) {
     if (activeKeys.has(key)) continue;
+    if (entry.label && activeLabels.has(entry.label)) continue;
     await entry.page?.close?.().catch(() => {});
     livePages.delete(key);
   }
 
   for (const [index, candidate] of filtered.entries()) {
     const key = candidate.key || candidate.href || `room-${index + 1}`;
-    const existing = livePages.get(key);
+    const existing = livePages.get(key) || Array.from(livePages.values()).find((entry) => entry.label && entry.label === candidate.handle);
     if (existing && !existing.page.isClosed() && isLiveDashboardUrl(existing.page.url())) {
       existing.label = candidate.handle || existing.label;
       existing.url = existing.page.url();

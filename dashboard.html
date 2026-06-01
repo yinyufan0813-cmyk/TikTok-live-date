@@ -479,13 +479,48 @@
     function latestLiveGroups(rows) {
       const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
       const currentTs = timestamps.at(-1);
-      const current = rows.filter(row => row.timestamp === currentTs);
+      const current = dedupeLiveRows(rows.filter(row => row.timestamp === currentTs));
       const previousByRoom = new Map();
-      for (const row of rows) {
+      for (const row of dedupeLiveRows(rows.filter(row => row.timestamp && row.timestamp < currentTs))) {
         if (!row.timestamp || row.timestamp >= currentTs) continue;
-        previousByRoom.set(row.room || row.url, row);
+        previousByRoom.set(liveRowKey(row), row);
       }
       return { currentTs, current, previousByRoom };
+    }
+
+    function dedupeLiveRows(rows) {
+      const byKey = new Map();
+      for (const row of rows) {
+        const key = liveRowKey(row);
+        const existing = byKey.get(key);
+        if (!existing || liveRowScore(row) > liveRowScore(existing)) byKey.set(key, row);
+      }
+      return [...byKey.values()];
+    }
+
+    function liveRowKey(row) {
+      return roomIdFromUrl(row.url) || row.room || row.url || "";
+    }
+
+    function roomIdFromUrl(value = "") {
+      try {
+        return new URL(value).searchParams.get("room_id") || "";
+      } catch {
+        return "";
+      }
+    }
+
+    function displayLiveRoom(row) {
+      if (row.room && !/^room-\d+/i.test(row.room)) return row.room;
+      return row.room || "-";
+    }
+
+    function liveRowScore(row) {
+      let score = row.room && !/^room-\d+/i.test(row.room) ? 10 : 0;
+      for (const field of ["current_viewers", "tap_through_rate_via_live_preview", "tap_through_rate", "live_ctr", "order_rate_sku_orders", "ads_cost", "gmv_max_roi"]) {
+        if (row[field]) score += 1;
+      }
+      return score;
     }
 
     function compareMetric(current, previous, field) {
@@ -545,10 +580,10 @@
           </thead>
           <tbody>
             ${current.map(row => {
-              const previous = previousByRoom.get(row.room || row.url);
+              const previous = previousByRoom.get(liveRowKey(row));
               return `
                 <tr>
-                  <td class="live-room" title="${row.room || ""}">${row.room || "-"}</td>
+                  <td class="live-room" title="${row.room || ""}">${displayLiveRoom(row)}</td>
                   <td>${liveMetric(row, previous, "current_viewers", "live-viewers")}</td>
                   <td>${liveMetric(row, previous, "tap_through_rate_via_live_preview", "live-preview")}</td>
                   <td>${liveMetric(row, previous, "tap_through_rate", "live-rate")}</td>

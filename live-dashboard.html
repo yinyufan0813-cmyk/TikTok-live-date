@@ -225,13 +225,48 @@
     function latestGroups(rows) {
       const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
       const currentTs = timestamps.at(-1);
-      const current = rows.filter(row => row.timestamp === currentTs);
+      const current = dedupeRows(rows.filter(row => row.timestamp === currentTs));
       const previousByRoom = new Map();
-      for (const row of rows) {
+      for (const row of dedupeRows(rows.filter(row => row.timestamp && row.timestamp < currentTs))) {
         if (!row.timestamp || row.timestamp >= currentTs) continue;
-        previousByRoom.set(row.room || row.url, row);
+        previousByRoom.set(rowKey(row), row);
       }
       return { currentTs, current, previousByRoom };
+    }
+
+    function dedupeRows(rows) {
+      const byKey = new Map();
+      for (const row of rows) {
+        const key = rowKey(row);
+        const existing = byKey.get(key);
+        if (!existing || rowScore(row) > rowScore(existing)) byKey.set(key, row);
+      }
+      return [...byKey.values()];
+    }
+
+    function rowKey(row) {
+      return roomId(row.url) || row.room || row.url || "";
+    }
+
+    function roomId(value = "") {
+      try {
+        return new URL(value).searchParams.get("room_id") || "";
+      } catch {
+        return "";
+      }
+    }
+
+    function roomName(row) {
+      if (row.room && !/^room-\d+/i.test(row.room)) return row.room;
+      return row.room || "-";
+    }
+
+    function rowScore(row) {
+      let score = row.room && !/^room-\d+/i.test(row.room) ? 10 : 0;
+      for (const field of ["current_viewers", "tap_through_rate_via_live_preview", "tap_through_rate", "live_ctr", "order_rate_sku_orders", "ads_cost", "gmv_max_roi"]) {
+        if (row[field]) score += 1;
+      }
+      return score;
     }
 
     function compare(current, previous, field) {
@@ -308,10 +343,10 @@
           </thead>
           <tbody>
             ${current.map(row => {
-              const previous = previousByRoom.get(row.room || row.url);
+              const previous = previousByRoom.get(rowKey(row));
               return `
                 <tr>
-                  <td class="room" title="${row.room || ""}">${row.room || "-"}</td>
+                  <td class="room" title="${row.room || ""}">${roomName(row)}</td>
                   <td>${metric(row, previous, "current_viewers", "viewers")}</td>
                   <td>${metric(row, previous, "tap_through_rate_via_live_preview", "preview")}</td>
                   <td>${metric(row, previous, "tap_through_rate", "tap")}</td>
