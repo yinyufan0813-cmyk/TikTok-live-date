@@ -6,6 +6,7 @@ cd "$SCRIPT_DIR"
 
 PORT="${GMVMAX_DASHBOARD_PORT:-8789}"
 DASHBOARD_URL="http://127.0.0.1:$PORT/dashboard.html"
+MOBILE_PORT="${GMVMAX_MOBILE_PORT:-8788}"
 CDP_PORT="${GMVMAX_CDP_PORT:-9222}"
 CDP_VERSION_URL="http://127.0.0.1:$CDP_PORT/json/version"
 CHROME_PROFILE="${GMVMAX_CHROME_PROFILE:-$HOME/.gmvmax-chrome-mac}"
@@ -147,9 +148,14 @@ if ! process_running "node src/live-monitor.js"; then
   /usr/bin/screen -dmS gmvmax-window-live zsh -lc "cd '$SCRIPT_DIR' && npm run live >> logs/live-monitor.out.log 2>> logs/live-monitor.err.log"
 fi
 
+if ! port_open "$MOBILE_PORT"; then
+  /usr/bin/screen -dmS gmvmax-window-mobile zsh -lc "cd '$SCRIPT_DIR' && GMVMAX_MOBILE_PORT='$MOBILE_PORT' npm run mobile >> logs/mobile.out.log 2>> logs/mobile.err.log"
+fi
+
 /usr/bin/open -na "Google Chrome" --args \
   --app="$DASHBOARD_URL" \
   --window-size=1360,780 \
   --window-position=60,80
 
 echo "GMV Max combined dashboard opened: $DASHBOARD_URL"
+echo "Mobile dashboard local URL: http://127.0.0.1:$MOBILE_PORT/"
