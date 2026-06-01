@@ -15,14 +15,16 @@
       --blue: #38bdf8;
       --green: #22c55e;
       --red: #ef4444;
+      --orange: #f97316;
+      --violet: #a78bfa;
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      min-width: 1160px;
-      min-height: 340px;
+      min-width: 1320px;
+      min-height: 720px;
       background: transparent;
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -165,19 +167,57 @@
     }
 
     .error { color: #fecaca; }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 14px 0 8px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .section-title span {
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 500;
+    }
+
+    .live-summary {
+      grid-template-columns: 0.7fr repeat(4, 1fr);
+    }
+
+    td.live-room {
+      width: 165px;
+      color: var(--text);
+      font-size: 11px;
+      font-weight: 800;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .live-viewers { color: var(--blue); }
+    .live-preview { color: #67e8f9; }
+    .live-rate { color: var(--green); }
+    .live-ctr { color: var(--yellow); }
+    .live-cost { color: var(--orange); }
+    .live-roi { color: var(--violet); }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <h1>LIVE GMV Max</h1>
+      <h1>LIVE GMV Max + LIVE Rooms</h1>
       <div class="status" id="status">读取中...</div>
     </header>
     <div id="app"></div>
   </div>
 
   <script>
-    const csvUrl = "./logs/gmvmax-plan-records.csv";
+    const gmvCsvUrl = "./logs/gmvmax-plan-records.csv";
+    const liveCsvUrl = "./logs/live-room-records.csv";
     const refreshMs = 30000;
 
     function parseCsv(text) {
@@ -217,6 +257,21 @@
     function moneyNumber(value) {
       const match = String(value || "").replaceAll(",", "").match(/-?\d+(?:\.\d+)?/);
       return match ? Number(match[0]) : 0;
+    }
+
+    function metricNumber(value) {
+      const text = String(value || "").replaceAll(",", "").trim();
+      const match = text.match(/-?\d+(?:\.\d+)?/);
+      if (!match) return null;
+      const multiplier = /m\b/i.test(text) ? 1000000 : /k\b/i.test(text) ? 1000 : 1;
+      return Number(match[0]) * multiplier;
+    }
+
+    function compact(value) {
+      if (value == null || !Number.isFinite(value)) return "-";
+      if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(2)}M`;
+      if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(2)}K`;
+      return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
     }
 
     function money(value) {
@@ -352,15 +407,8 @@
       return totalBudget > 0 && totalSpend >= totalBudget * 0.7;
     }
 
-    function render(rows) {
-      const app = document.getElementById("app");
-      const status = document.getElementById("status");
-      if (!rows.length) {
-        app.innerHTML = `<div class="empty">等待采集数据...</div>`;
-        status.textContent = "no data";
-        return;
-      }
-
+    function renderGmv(rows) {
+      if (!rows.length) return `<div class="empty">等待 GMVMAX 采集数据...</div>`;
       const { currentTs, current, previousByKey } = latestGroups(rows);
       const spendTotal = current.reduce((sum, row) => sum + moneyNumber(row.interval_spend_increase), 0);
       const gmvTotal = current.reduce((sum, row) => sum + moneyNumber(row.interval_order_amount_increase), 0);
@@ -377,8 +425,7 @@
         second: "2-digit",
         hour12: false
       });
-      status.textContent = `最新 ${updatedAt} | 每30秒刷新`;
-      app.innerHTML = `
+      return `
         <section class="summary">
           <div class="box"><label>新增消耗</label><strong class="spend">${money(spendTotal)}</strong></div>
           <div class="box"><label>新增成交</label><strong class="gmv">${money(gmvTotal)}</strong></div>
@@ -429,11 +476,152 @@
       `;
     }
 
+    function latestLiveGroups(rows) {
+      const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
+      const currentTs = timestamps.at(-1);
+      const current = rows.filter(row => row.timestamp === currentTs);
+      const previousByRoom = new Map();
+      for (const row of rows) {
+        if (!row.timestamp || row.timestamp >= currentTs) continue;
+        previousByRoom.set(row.room || row.url, row);
+      }
+      return { currentTs, current, previousByRoom };
+    }
+
+    function compareMetric(current, previous, field) {
+      const now = metricNumber(current?.[field]);
+      const before = metricNumber(previous?.[field]);
+      if (now == null || before == null) return { arrow: "→", cls: "flat", diff: "" };
+      const diff = now - before;
+      if (diff > 0.004) return { arrow: "▲", cls: "up", diff: `+${compact(diff)}` };
+      if (diff < -0.004) return { arrow: "▼", cls: "down", diff: compact(diff) };
+      return { arrow: "→", cls: "flat", diff: "0" };
+    }
+
+    function liveMetric(row, previous, field, cls) {
+      const change = compareMetric(row, previous, field);
+      return `
+        <div class="metric">
+          <span class="value ${cls}">${row[field] || "-"}</span>
+          <span class="arrow ${change.cls}">${change.arrow}</span>
+          <span class="diff">${change.diff}</span>
+        </div>
+      `;
+    }
+
+    function avg(rows, field) {
+      const values = rows.map(row => metricNumber(row[field])).filter(value => value != null && Number.isFinite(value));
+      if (!values.length) return null;
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    }
+
+    function sum(rows, field) {
+      return rows.reduce((total, row) => total + (metricNumber(row[field]) || 0), 0);
+    }
+
+    function renderLive(rows) {
+      if (!rows.length) return `<div class="empty">等待直播间采集数据...</div>`;
+      const { current, previousByRoom } = latestLiveGroups(rows);
+      return `
+        <section class="summary live-summary">
+          <div class="box"><label>直播间</label><strong>${current.length}</strong></div>
+          <div class="box"><label>实时在线人数</label><strong class="live-viewers">${compact(sum(current, "current_viewers"))}</strong></div>
+          <div class="box"><label>Ads Cost</label><strong class="live-cost">${compact(sum(current, "ads_cost"))}</strong></div>
+          <div class="box"><label>平均 LIVE CTR</label><strong class="live-ctr">${compact(avg(current, "live_ctr"))}%</strong></div>
+          <div class="box"><label>平均 GMV Max ROI</label><strong class="live-roi">${compact(avg(current, "gmv_max_roi"))}</strong></div>
+        </section>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 165px;">直播间</th>
+              <th>实时在线人数</th>
+              <th>Tap-through via LIVE preview</th>
+              <th>Tap-through rate</th>
+              <th>LIVE CTR</th>
+              <th>Order rate (SKU orders)</th>
+              <th>Ads Cost</th>
+              <th>GMV Max ROI</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${current.map(row => {
+              const previous = previousByRoom.get(row.room || row.url);
+              return `
+                <tr>
+                  <td class="live-room" title="${row.room || ""}">${row.room || "-"}</td>
+                  <td>${liveMetric(row, previous, "current_viewers", "live-viewers")}</td>
+                  <td>${liveMetric(row, previous, "tap_through_rate_via_live_preview", "live-preview")}</td>
+                  <td>${liveMetric(row, previous, "tap_through_rate", "live-rate")}</td>
+                  <td>${liveMetric(row, previous, "live_ctr", "live-ctr")}</td>
+                  <td>${liveMetric(row, previous, "order_rate_sku_orders", "live-rate")}</td>
+                  <td>${liveMetric(row, previous, "ads_cost", "live-cost")}</td>
+                  <td>${liveMetric(row, previous, "gmv_max_roi", "live-roi")}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function latestTimestamp(rows) {
+      return [...new Set(rows.map(row => row.timestamp).filter(Boolean))].at(-1) || "";
+    }
+
+    function formatTime(timestamp) {
+      if (!timestamp) return "";
+      return new Date(timestamp).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+    }
+
+    function render(gmvRows, liveRows) {
+      const app = document.getElementById("app");
+      const status = document.getElementById("status");
+      if (!gmvRows.length && !liveRows.length) {
+        app.innerHTML = `<div class="empty">等待采集数据...</div>`;
+        status.textContent = "no data";
+        return;
+      }
+
+      const gmvTs = latestTimestamp(gmvRows);
+      const liveTs = latestTimestamp(liveRows);
+      const checkedAt = new Date().toLocaleTimeString("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+      status.textContent = `GMVMAX ${formatTime(gmvTs) || "-"} | LIVE ${formatTime(liveTs) || "-"} | 检查 ${checkedAt}`;
+      app.innerHTML = `
+        <div class="section-title">GMVMAX 广告效果 <span>${formatTime(gmvTs) || "等待数据"}</span></div>
+        ${renderGmv(gmvRows)}
+        <div class="section-title">直播间实时指标 <span>${formatTime(liveTs) || "等待数据"}</span></div>
+        ${renderLive(liveRows)}
+      `;
+    }
+
+    async function readCsv(url, optional = false) {
+      const response = await fetch(`${url}?t=${Date.now()}`);
+      if (!response.ok) {
+        if (optional && response.status === 404) return [];
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      return parseCsv(await response.text());
+    }
+
     async function load() {
       try {
-        const response = await fetch(`${csvUrl}?t=${Date.now()}`);
-        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        render(parseCsv(await response.text()));
+        const [gmvRows, liveRows] = await Promise.all([
+          readCsv(gmvCsvUrl, true),
+          readCsv(liveCsvUrl, true)
+        ]);
+        render(gmvRows, liveRows);
       } catch (error) {
         document.getElementById("status").textContent = "error";
         document.getElementById("app").innerHTML = `<div class="error">读取数据失败：${error.message}</div>`;

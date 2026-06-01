@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 $port = if ($env:GMVMAX_DASHBOARD_PORT) { [int]$env:GMVMAX_DASHBOARD_PORT } else { 8787 }
-$url = "http://127.0.0.1:$port/dashboard.html"
+$url = "http://127.0.0.1:$port/live-dashboard.html"
 
 function Test-PortOpen {
   param([string]$HostName, [int]$Port)
@@ -30,30 +30,11 @@ function Find-Chrome {
 
 & (Join-Path $PSScriptRoot "start-chrome-win.ps1")
 
-function Test-ProcessCommand {
-  param([string]$Pattern)
-  try {
-    return [bool](Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like $Pattern } | Select-Object -First 1)
-  } catch {
-    return $false
-  }
-}
-
-if (-not (Test-ProcessCommand -Pattern "*node src/monitor.js*")) {
-  Start-Process -FilePath "powershell" -WindowStyle Minimized -ArgumentList @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-Command", "Set-Location -LiteralPath '$root'; npm start"
-  )
-}
-
-if (-not (Test-ProcessCommand -Pattern "*node src/live-monitor.js*")) {
-  Start-Process -FilePath "powershell" -WindowStyle Minimized -ArgumentList @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-Command", "Set-Location -LiteralPath '$root'; npm run live"
-  )
-}
+Start-Process -FilePath "powershell" -WindowStyle Minimized -ArgumentList @(
+  "-NoProfile",
+  "-ExecutionPolicy", "Bypass",
+  "-Command", "Set-Location -LiteralPath '$root'; npm run live"
+)
 
 if (-not (Test-PortOpen -HostName "127.0.0.1" -Port $port)) {
   $command = "Set-Location -LiteralPath '$root'; node src/dashboard-server.js"
@@ -69,11 +50,11 @@ $chrome = Find-Chrome
 if ($chrome) {
   Start-Process -FilePath $chrome -ArgumentList @(
     "--app=$url",
-    "--window-size=1360,780",
-    "--window-position=60,80"
+    "--window-size=1320,460",
+    "--window-position=60,520"
   )
 } else {
   Start-Process $url
 }
 
-Write-Host "GMV Max dashboard opened: $url"
+Write-Host "LIVE room dashboard opened: $url"

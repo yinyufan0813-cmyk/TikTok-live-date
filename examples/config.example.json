@@ -8,6 +8,7 @@
   "outputDir": "./logs",
   "locale": "zh-CN",
   "timezoneId": "Asia/Kuala_Lumpur",
+  "accountOrder": ["YOUMILIER KLASIK", "YOUMILIER FASHION", "YOUMILIER"],
   "tabMatch": {
     "urlIncludes": ["ads.tiktok.com", "gmv-max/dashboard", "type=live"],
     "titleIncludes": ["GMV"]
@@ -19,6 +20,28 @@
     "newSpend": "",
     "newOrderAmount": "",
     "totalSpend": "",
-    "totalOrderAmount": ""
+    "totalOrderAmount": "",
+    "totalBudget": ""
+  },
+  "liveAnalytics": {
+    "overviewUrl": "https://seller-my.tiktok.com/compass/data-overview?shop_region=MY",
+    "intervalMinutes": 10,
+    "maxRooms": 12,
+    "liveStreamsText": "LIVE streams",
+    "liveRoomTexts": [],
+    "discoverEveryRun": true,
+    "selectors": {
+      "liveStreamsTrigger": "",
+      "liveRoomItems": "",
+      "metricHover": "",
+      "roomName": "",
+      "currentViewers": "",
+      "tapThroughRateViaLivePreview": "",
+      "tapThroughRate": "",
+      "liveCtr": "",
+      "orderRateSkuOrders": "",
+      "adsCost": "",
+      "gmvMaxRoi": ""
+    }
   }
 }

@@ -76,6 +76,8 @@ scripts\start-chrome-win.bat
 http://127.0.0.1:9222
 ```
 
+启动脚本会优先打开 `$env:GMVMAX_URL`，其次读取 `config.json` 的 `url`。如果两者都没有配置，则只打开 TikTok Ads 首页，避免把包含广告账号或店铺 ID 的 Dashboard URL 写进仓库。
+
 ### 2. 在新 Chrome 窗口中登录 TikTok Ads
 
 打开你的 TikTok GMV Max 页面并完成登录。
@@ -108,7 +110,12 @@ npm start
 
 ## 屏幕面板
 
-推荐使用 HTML 面板，三行显示三个账号的数据，包含新增消耗、新增成交、新增 ROI、总消耗、总成交和总 ROI，并显示相对上一轮数据的 `▲` / `▼` / `→`。
+推荐使用 HTML 面板。现在同一个面板会同时显示：
+
+- GMVMAX 三账号数据：新增消耗、新增成交、新增 ROI、总消耗、总成交和总 ROI
+- LIVE 直播间数据：实时在线人数、Tap-through rate、LIVE CTR、Order rate、Ads Cost 和 GMV Max ROI
+
+两块数据都会显示相对上一轮数据的 `▲` / `▼` / `→`。
 
 启动方式：
 
@@ -122,13 +129,113 @@ npm run dashboard
 scripts\start-dashboard-win.bat
 ```
 
+macOS 可直接双击或运行：
+
+```bash
+./start_dashboard.command
+```
+
 面板会启动本地服务：
 
 ```text
 http://127.0.0.1:8787/dashboard.html
 ```
 
-页面每 30 秒读取一次 `logs/gmvmax-plan-records.csv`，右上角会显示带日期的最新更新时间。
+如果 `8787` 已被旧版面板占用，macOS 启动脚本默认使用：
+
+```text
+http://127.0.0.1:8789/dashboard.html
+```
+
+页面每 30 秒读取一次 `logs/gmvmax-plan-records.csv` 和 `logs/live-room-records.csv`，右上角会显示两块数据的最新更新时间和本次检查时间。
+
+如果需要通过 Tailscale Funnel 暴露手机面板，可以运行：
+
+```powershell
+npm run mobile:funnel
+```
+
+可选环境变量：
+
+```powershell
+$env:GMVMAX_MOBILE_PORT = "8788"
+$env:GMVMAX_TAILSCALE_HOSTNAME = "your-hostname"
+```
+
+公开访问地址以 `tailscale funnel status` 输出为准。
+
+## LIVE 直播间指标监测
+
+新增的直播间监测会从 TikTok Seller Analytics 页面进入所有正在直播的直播大屏，并每 10 分钟记录这些指标：
+
+- 实时在线人数
+- Tap-through rate (via LIVE preview)
+- Tap-through rate
+- LIVE CTR
+- Order rate (SKU orders)
+- Ads Cost
+- GMV Max ROI
+
+数据会写入：
+
+- `logs/live-room-records.jsonl`
+- `logs/live-room-records.csv`
+
+### 1. 配置入口页面
+
+在 `config.json` 里加入或确认以下配置：
+
+```json
+{
+  "liveAnalytics": {
+    "overviewUrl": "https://seller-my.tiktok.com/compass/data-overview?shop_region=MY",
+    "intervalMinutes": 10,
+    "maxRooms": 12,
+    "liveStreamsText": "LIVE streams",
+    "liveRoomTexts": [],
+    "discoverEveryRun": true,
+    "selectors": {
+      "liveStreamsTrigger": "",
+      "liveRoomItems": "",
+      "metricHover": ""
+    }
+  }
+}
+```
+
+默认每轮都会刷新 Analytics 入口页，自动把鼠标悬停到右侧 `LIVE streams +N` 区域，按浮出的直播间账号重新打开直播大屏。这样直播间关播后，下一轮会以红框下拉列表为准，不再继续采集旧的大屏页面。如果 TikTok 页面改版，可在 `selectors` 中补实际 CSS 选择器。
+
+### 2. 单次采集
+
+```powershell
+npm run live:once
+```
+
+### 3. 持续监控
+
+```powershell
+npm run live
+```
+
+### 4. 打开直播悬浮窗
+
+```powershell
+npm run live:dashboard
+```
+
+或双击：
+
+```text
+scripts\start-live-dashboard-win.bat
+```
+
+直播悬浮窗地址：
+
+```text
+http://127.0.0.1:8787/live-dashboard.html
+```
+
+如果字段没有识别出来，脚本会在 `logs/` 保存 `live-debug-时间.txt` 和 `live-debug-时间.png`，便于补选择器。
 
 ## 备用 Tk 悬浮窗
 

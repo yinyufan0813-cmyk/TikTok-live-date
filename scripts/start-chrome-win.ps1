@@ -1,6 +1,25 @@
 $ErrorActionPreference = "Stop"
 
-$dashboardUrl = "https://ads.tiktok.com/i18n/gmv-max/dashboard?aadvid=7529709300881686546&is_refresh_page=true&oec_seller_id=7494989238589884894&bc_id=7362608187637366800&activated_tab_id=2&type=live&live_campaign_page=1&live_campaign_page_size=10&list_start_date=1779096162299&list_end_date=1779096162299"
+$defaultUrl = "https://ads.tiktok.com/"
+$configPath = Join-Path (Get-Location) "config.json"
+$dashboardUrl = $env:GMVMAX_URL
+
+if (-not $dashboardUrl -and (Test-Path $configPath)) {
+  try {
+    $config = Get-Content $configPath -Raw | ConvertFrom-Json
+    if ($config.url -and $config.url -notmatch "^PASTE_") {
+      $dashboardUrl = $config.url
+    }
+  } catch {
+    Write-Warning "Could not read config.json URL: $($_.Exception.Message)"
+  }
+}
+
+if (-not $dashboardUrl) {
+  $dashboardUrl = $defaultUrl
+  Write-Host "No GMVMAX_URL or config.json url found. Opening TikTok Ads home page instead."
+}
+
 $cdpVersionUrl = "http://127.0.0.1:9222/json/version"
 
 try {

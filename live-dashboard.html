@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LIVE Room Float</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --panel: rgba(17, 24, 39, 0.18);
+      --line: rgba(148, 163, 184, 0.35);
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --cyan: #22d3ee;
+      --blue: #60a5fa;
+      --green: #22c55e;
+      --yellow: #fbbf24;
+      --red: #ef4444;
+      --violet: #a78bfa;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 1260px;
+      min-height: 390px;
+      background: transparent;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    .wrap {
+      min-height: 100vh;
+      padding: 14px 16px 16px;
+      border: 1px solid var(--line);
+      background: rgba(0, 0, 0, 0.08);
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: 0.8fr repeat(4, 1fr);
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .box {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 9px 10px;
+    }
+
+    .box label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .box strong {
+      font-size: 13px;
+    }
+
+    table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      background: transparent;
+    }
+
+    th, td {
+      border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+      padding: 10px 10px;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      background: transparent;
+    }
+
+    td.room {
+      width: 185px;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metric {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+      white-space: nowrap;
+    }
+
+    .value {
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .viewers { color: var(--cyan); }
+    .preview { color: var(--blue); }
+    .tap { color: var(--green); }
+    .ctr { color: var(--yellow); }
+    .cost { color: #f97316; }
+    .roi { color: var(--violet); }
+
+    .arrow {
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .up { color: var(--green); }
+    .down { color: var(--red); }
+    .flat { color: var(--muted); }
+
+    .diff {
+      color: var(--muted);
+      font-size: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .empty, .error {
+      padding: 40px 20px;
+      color: var(--muted);
+      font-size: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .error { color: #fecaca; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>LIVE Room Metrics</h1>
+      <div class="status" id="status">读取中...</div>
+    </header>
+    <div id="app"></div>
+  </div>
+
+  <script>
+    const csvUrl = "./logs/live-room-records.csv";
+    const refreshMs = 30000;
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let cell = "";
+      let quoted = false;
+      for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        const next = text[index + 1];
+        if (quoted && char === '"' && next === '"') {
+          cell += '"';
+          index += 1;
+        } else if (char === '"') {
+          quoted = !quoted;
+        } else if (!quoted && char === ",") {
+          row.push(cell);
+          cell = "";
+        } else if (!quoted && (char === "\n" || char === "\r")) {
+          if (char === "\r" && next === "\n") index += 1;
+          row.push(cell);
+          if (row.some(Boolean)) rows.push(row);
+          row = [];
+          cell = "";
+        } else {
+          cell += char;
+        }
+      }
+      if (cell || row.length) {
+        row.push(cell);
+        rows.push(row);
+      }
+      const headers = rows.shift() || [];
+      return rows.map(values => Object.fromEntries(headers.map((key, index) => [key, values[index] || ""])));
+    }
+
+    function metricNumber(value) {
+      const text = String(value || "").replaceAll(",", "").trim();
+      const match = text.match(/-?\d+(?:\.\d+)?/);
+      if (!match) return null;
+      const multiplier = /m\b/i.test(text) ? 1000000 : /k\b/i.test(text) ? 1000 : 1;
+      return Number(match[0]) * multiplier;
+    }
+
+    function compact(value) {
+      if (value == null || !Number.isFinite(value)) return "-";
+      if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(2)}M`;
+      if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(2)}K`;
+      return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+    }
+
+    function latestGroups(rows) {
+      const timestamps = [...new Set(rows.map(row => row.timestamp).filter(Boolean))];
+      const currentTs = timestamps.at(-1);
+      const current = rows.filter(row => row.timestamp === currentTs);
+      const previousByRoom = new Map();
+      for (const row of rows) {
+        if (!row.timestamp || row.timestamp >= currentTs) continue;
+        previousByRoom.set(row.room || row.url, row);
+      }
+      return { currentTs, current, previousByRoom };
+    }
+
+    function compare(current, previous, field) {
+      const now = metricNumber(current?.[field]);
+      const before = metricNumber(previous?.[field]);
+      if (now == null || before == null) return { arrow: "→", cls: "flat", diff: "" };
+      const diff = now - before;
+      if (diff > 0.004) return { arrow: "▲", cls: "up", diff: `+${compact(diff)}` };
+      if (diff < -0.004) return { arrow: "▼", cls: "down", diff: compact(diff) };
+      return { arrow: "→", cls: "flat", diff: "0" };
+    }
+
+    function metric(row, previous, field, cls) {
+      const change = compare(row, previous, field);
+      return `
+        <div class="metric">
+          <span class="value ${cls}">${row[field] || "-"}</span>
+          <span class="arrow ${change.cls}">${change.arrow}</span>
+          <span class="diff">${change.diff}</span>
+        </div>
+      `;
+    }
+
+    function avg(rows, field) {
+      const values = rows.map(row => metricNumber(row[field])).filter(value => value != null && Number.isFinite(value));
+      if (!values.length) return null;
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    }
+
+    function sum(rows, field) {
+      return rows.reduce((total, row) => total + (metricNumber(row[field]) || 0), 0);
+    }
+
+    function render(rows) {
+      const app = document.getElementById("app");
+      const status = document.getElementById("status");
+      if (!rows.length) {
+        app.innerHTML = `<div class="empty">等待直播间采集数据...</div>`;
+        status.textContent = "no data";
+        return;
+      }
+
+      const { currentTs, current, previousByRoom } = latestGroups(rows);
+      const updatedAt = new Date(currentTs).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+      status.textContent = `最新 ${updatedAt} | 每30秒刷新`;
+
+      app.innerHTML = `
+        <section class="summary">
+          <div class="box"><label>直播间</label><strong>${current.length}</strong></div>
+          <div class="box"><label>实时在线人数</label><strong class="viewers">${compact(sum(current, "current_viewers"))}</strong></div>
+          <div class="box"><label>Ads Cost</label><strong class="cost">${compact(sum(current, "ads_cost"))}</strong></div>
+          <div class="box"><label>平均 LIVE CTR</label><strong class="ctr">${compact(avg(current, "live_ctr"))}%</strong></div>
+          <div class="box"><label>平均 GMV Max ROI</label><strong class="roi">${compact(avg(current, "gmv_max_roi"))}</strong></div>
+        </section>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 185px;">直播间</th>
+              <th>实时在线人数</th>
+              <th>Tap-through via LIVE preview</th>
+              <th>Tap-through rate</th>
+              <th>LIVE CTR</th>
+              <th>Order rate (SKU orders)</th>
+              <th>Ads Cost</th>
+              <th>GMV Max ROI</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${current.map(row => {
+              const previous = previousByRoom.get(row.room || row.url);
+              return `
+                <tr>
+                  <td class="room" title="${row.room || ""}">${row.room || "-"}</td>
+                  <td>${metric(row, previous, "current_viewers", "viewers")}</td>
+                  <td>${metric(row, previous, "tap_through_rate_via_live_preview", "preview")}</td>
+                  <td>${metric(row, previous, "tap_through_rate", "tap")}</td>
+                  <td>${metric(row, previous, "live_ctr", "ctr")}</td>
+                  <td>${metric(row, previous, "order_rate_sku_orders", "tap")}</td>
+                  <td>${metric(row, previous, "ads_cost", "cost")}</td>
+                  <td>${metric(row, previous, "gmv_max_roi", "roi")}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function load() {
+      try {
+        const response = await fetch(`${csvUrl}?t=${Date.now()}`);
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        render(parseCsv(await response.text()));
+      } catch (error) {
+        document.getElementById("status").textContent = "error";
+        document.getElementById("app").innerHTML = `<div class="error">读取直播数据失败：${error.message}</div>`;
+      }
+    }
+
+    load();
+    setInterval(load, refreshMs);
+  </script>
+</body>
+</html>
