@@ -324,7 +324,9 @@
 
     async function load() {
       try {
-        const response = await fetch(`/api/latest?t=${Date.now()}`, { cache: "no-store" });
+        const token = new URLSearchParams(location.search).get("token") || "";
+        const tokenPart = token ? `&token=${encodeURIComponent(token)}` : "";
+        const response = await fetch(`/api/latest?t=${Date.now()}${tokenPart}`, { cache: "no-store" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         render(await response.json());
       } catch (error) {

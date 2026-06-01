@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const port = Number(process.env.GMVMAX_MOBILE_PORT || 8788);
 const host = process.env.GMVMAX_MOBILE_HOST || "0.0.0.0";
+const accessToken = process.env.GMVMAX_MOBILE_TOKEN || "";
 const gmvCsvPath = path.join(rootDir, "logs", "gmvmax-plan-records.csv");
 const liveCsvPath = path.join(rootDir, "logs", "live-room-records.csv");
 
@@ -263,10 +264,32 @@ function localUrls() {
   return urls;
 }
 
+function isAuthorized(request, url) {
+  if (!accessToken) return true;
+  const provided = url.searchParams.get("token") || "";
+  const bearer = (request.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  return provided === accessToken || bearer === accessToken;
+}
+
+function requiresAuth(pathname) {
+  return pathname === "/" || pathname === "/mobile.html" || pathname === "/api/latest";
+}
+
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url || "/", `http://${request.headers.host}`);
+  const remote = request.socket.remoteAddress || "";
+  console.log(`[MOBILE] ${new Date().toISOString()} ${remote} ${request.method} ${url.pathname}`);
 
   try {
+    if (requiresAuth(url.pathname) && !isAuthorized(request, url)) {
+      response.writeHead(401, {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      response.end("Unauthorized");
+      return;
+    }
+
     if (url.pathname === "/api/latest") {
       const payload = await latestData();
       response.writeHead(200, {
@@ -300,4 +323,5 @@ const server = http.createServer(async (request, response) => {
 server.listen(port, host, () => {
   console.log(`GMV Max mobile app server running on http://127.0.0.1:${port}/`);
   for (const url of localUrls()) console.log(`iPhone URL: ${url}`);
+  if (accessToken) console.log("Mobile access token is enabled.");
 });
