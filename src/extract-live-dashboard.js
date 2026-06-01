@@ -78,30 +78,49 @@ export function extractLiveDashboardMetrics(config = {}) {
     return bodyText.match(pattern)?.[1]?.trim() || null;
   }
 
-  function normalizeSplitDigits(value) {
-    const compact = String(value || "").trim().replace(/\s+/g, "");
-    return /^[-+]?\d[\d,.]*(?:\.\d+)?(?:K|M)?$/i.test(compact) ? compact : String(value || "").trim();
-  }
+  function directValueAfterLabel(labelOptions, nextLabelOptions = [], valuePattern = "[-+]?\\d[\\d,.]*(?:\\.\\d+)?\\s*(?:K|M|%)?") {
+    const labels = Array.isArray(labelOptions) ? labelOptions : [labelOptions];
+    const nextLabels = Array.isArray(nextLabelOptions) ? nextLabelOptions : [nextLabelOptions];
+    const nextPattern = nextLabels.filter(Boolean).map((label) => escapeRegExp(label).replace(/\s+/g, "\\s+")).join("|");
 
-  function parseMetricNumber(value) {
-    const normalized = normalizeSplitDigits(value).replace(/,/g, "");
-    const match = normalized.match(/^([-+]?\d+(?:\.\d+)?)(K|M)?$/i);
-    if (!match) return null;
-    const multiplier = match[2]?.toUpperCase() === "M" ? 1_000_000 : match[2]?.toUpperCase() === "K" ? 1_000 : 1;
-    return Number(match[1]) * multiplier;
-  }
+    for (const label of labels) {
+      const escaped = escapeRegExp(label).replace(/\s+/g, "\\s+");
+      const bounded = nextPattern
+        ? new RegExp(`${escaped}\\s*[:：]?\\s*(${valuePattern})(?=\\s+(?:${nextPattern})|\\s*$)`, "i")
+        : new RegExp(`${escaped}\\s*[:：]?\\s*(${valuePattern})`, "i");
+      const match = bodyText.match(bounded);
+      if (match?.[1]) return match[1].trim();
+    }
 
-  function attributedGmvValue() {
-    const cleaned = bodyText.replace(/GMV\s*MAX\s*active/gi, "");
-    const match = cleaned.match(/Attributed GMV \(RM\)\s+([\d\s,.]+(?:K|M)?)\s+Attributed items sold/i);
-    return match?.[1] ? normalizeSplitDigits(match[1]) : null;
-  }
+    const all = Array.from(document.querySelectorAll("body *"));
+    for (const node of all) {
+      const ownText = textOf(node);
+      if (!ownText || ownText.length > 120) continue;
+      const matchedLabel = labels.find((label) => ownText.toLowerCase() === label.toLowerCase() || ownText.toLowerCase().startsWith(`${label.toLowerCase()} `));
+      if (!matchedLabel) continue;
 
-  function calculatedRoi(attributedGmv, adsCost) {
-    const gmv = parseMetricNumber(attributedGmv);
-    const cost = parseMetricNumber(adsCost);
-    if (!gmv || !cost) return null;
-    return (gmv / cost).toFixed(2).replace(/\.00$/, "");
+      const localText = ownText.slice(matchedLabel.length).trim();
+      const localMatch = localText.match(new RegExp(`^\\s*(${valuePattern})\\s*$`, "i"));
+      if (localMatch?.[1]) return localMatch[1].trim();
+
+      const parent = node.parentElement;
+      const siblings = parent ? Array.from(parent.children) : [];
+      const index = siblings.indexOf(node);
+      const candidates = [
+        node.nextElementSibling,
+        ...siblings.slice(index + 1, index + 4),
+        ...(parent ? Array.from(parent.querySelectorAll("*")).slice(0, 16) : [])
+      ].filter(Boolean);
+
+      for (const candidate of candidates) {
+        if (candidate === node) continue;
+        const candidateText = textOf(candidate);
+        if (!candidateText || candidateText.length > 40 || labels.some((label) => candidateText.toLowerCase().includes(label.toLowerCase()))) continue;
+        const match = candidateText.match(new RegExp(`^\\s*(${valuePattern})\\s*$`, "i"));
+        if (match?.[1]) return match[1].trim();
+      }
+    }
+    return null;
   }
 
   const currentViewers =
@@ -125,7 +144,9 @@ export function extractLiveDashboardMetrics(config = {}) {
     valueBetweenLabels("Ads Cost", "GMV Max ROI", "[-+]?\\d[\\d,.]*(?:\\.\\d+)?\\s*(?:K|M|MYR|RM)?") ||
     valueAfterLabel(["Ads Cost", "Ad Cost", "广告消耗"], "[-+]?\\d[\\d,.]*(?:\\.\\d+)?\\s*(?:K|M|MYR|RM)?");
 
-  const attributedGmv = attributedGmvValue();
+  const gmvMaxRoi =
+    valueFromSelector("gmvMaxRoi") ||
+    directValueAfterLabel(["GMV Max ROI", "GMV MAX ROI"], ["GMV per hour", "Avg. viewing duration per view", "Comment rate", "Follow rate", "Like rate", "> 1 min. views"], "[-+]?\\d[\\d,.]*(?:\\.\\d+)?");
 
   return {
     url: location.href,
@@ -138,7 +159,7 @@ export function extractLiveDashboardMetrics(config = {}) {
       liveCtr: valueFromSelector("liveCtr") || valueBetweenLabels("LIVE CTR", "Ads Cost") || valueAfterLabel(["LIVE CTR", "Live CTR"]),
       orderRateSkuOrders: valueFromSelector("orderRateSkuOrders") || valueBetweenLabels("Order rate (SKU orders)", "GMV per hour") || valueAfterLabel(["Order rate (SKU orders)", "Order rate", "SKU orders"]),
       adsCost,
-      gmvMaxRoi: valueFromSelector("gmvMaxRoi") || valueBetweenLabels("GMV Max ROI", "Order rate (SKU orders)", "[-+]?\\d[\\d,.]*(?:\\.\\d+)?") || valueAfterLabel(["GMV Max ROI", "GMV MAX ROI", "ROI"], "[-+]?\\d[\\d,.]*(?:\\.\\d+)?") || calculatedRoi(attributedGmv, adsCost)
+      gmvMaxRoi
     },
     bodyText
   };
