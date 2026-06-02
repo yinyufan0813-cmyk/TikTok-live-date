@@ -149,7 +149,7 @@ if ! process_running "node src/live-monitor.js"; then
 fi
 
 if ! port_open "$MOBILE_PORT"; then
-  /usr/bin/screen -dmS gmvmax-window-mobile zsh -lc "cd '$SCRIPT_DIR' && GMVMAX_MOBILE_PORT='$MOBILE_PORT' npm run mobile >> logs/mobile.out.log 2>> logs/mobile.err.log"
+  /usr/bin/screen -dmS gmvmax-window-mobile zsh -lc "cd '$SCRIPT_DIR' && GMVMAX_MOBILE_PORT='$MOBILE_PORT' GMVMAX_MOBILE_TOKEN='${GMVMAX_MOBILE_TOKEN:-}' npm run mobile >> logs/mobile.out.log 2>> logs/mobile.err.log"
 fi
 
 /usr/bin/open -na "Google Chrome" --args \
